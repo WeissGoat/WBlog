@@ -6,9 +6,9 @@ favicon        = "img/avatar.png"
     since = 2020
 
 [sidebar]
-    emoji    = "✏️"
-    subtitle = "Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-    avatar   = "img/avatar.png"
+    emoji    = "💻"
+    subtitle = "学无止境"
+    avatar   = "img/avatar.jpg"
 
 [article]
     [article.license]
@@ -26,5 +26,5 @@ favicon        = "img/avatar.png"
 
 [comments]
     # See complete configuration in config/_default/params.toml
-    enabled  = true
+    enabled  = false
     provider = "disqus"
