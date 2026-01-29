@@ -1,0 +1,38 @@
+name: Deploy Hugo Site
+
+on:
+  # 当推送到 main 分支时触发
+  push:
+    branches:
+      - main
+  # 允许在 GitHub 网页上手动触发
+  workflow_dispatch:
+
+# 设置权限 (重要！没有这个无法推送到 gh-pages)
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: true  # 必须拉取主题子模块
+          fetch-depth: 0    #以此获取 Git 历史信息(Stack主题需要这个来显示"最后修改时间")
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: 'latest'
+          extended: true  # 必须开启 Extended 用于编译 SCSS
+
+      - name: Build
+        run: hugo --minify
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public  # Hugo 生成的静态文件目录
