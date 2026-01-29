@@ -1,6 +1,6 @@
 baseURL = "https://whitessheep.github.io/WBlog"
 languageCode = "en-us"
-title        = "WBlog"
+title        = "白山羊"
 theme = "hugo-theme-stack"
 # Theme i18n support
 # See i18n folder for available languages
