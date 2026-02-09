@@ -1,4 +1,4 @@
-baseURL = "https://whitessheep.github.io/WBlog"
+baseURL = "https://WeissGoat.github.io/WBlog"
 languageCode = "en-us"
 title        = "白山羊"
 theme = "hugo-theme-stack"
