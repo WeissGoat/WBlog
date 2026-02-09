@@ -1,11 +1,764 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>白山羊</title><link>https://whitessheep.github.io/WBlog/</link><description>Recent content on 白山羊</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Mon, 29 Jan 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://whitessheep.github.io/WBlog/index.xml" rel="self" type="application/rss+xml"/><item><title>你好，世界</title><link>https://whitessheep.github.io/WBlog/p/%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C/</link><pubDate>Mon, 29 Jan 2024 00:00:00 +0000</pubDate><guid>https://whitessheep.github.io/WBlog/p/%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C/</guid><description>&lt;p&gt;这里是正文。
-&lt;img src="https://whitessheep.github.io/WBlog/p/%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C/cover.png"
-width="832"
-height="1216"
-srcset="https://whitessheep.github.io/WBlog/p/%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C/cover_hu_f200e592f310a991.png 480w, https://whitessheep.github.io/WBlog/p/%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C/cover_hu_ddf741f8c66f923e.png 1024w"
-loading="lazy"
-alt="既然在一起，引用图片就不用写路径了"
-class="gallery-image"
-data-flex-grow="68"
-data-flex-basis="164px"
-&gt;&lt;/p&gt;</description></item></channel></rss>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>白山羊</title><link>https://WeissGoat.github.io/WBlog/</link><description>Recent content on 白山羊</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Mon, 05 Feb 2024 18:00:00 +0800</lastBuildDate><atom:link href="https://WeissGoat.github.io/WBlog/index.xml" rel="self" type="application/rss+xml"/><item><title>Lua GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
+&lt;/h1&gt;&lt;p&gt;在上一篇文章中，我们探讨了 Lua 的数据结构（&lt;code&gt;TValue&lt;/code&gt;）以及哪些对象是值类型，哪些是引用类型。今天，我们继续向下挖掘，聊聊 Lua 虚拟机中的&lt;strong&gt;垃圾回收机制（Garbage Collection）&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id="从-stop-the-world-到增量"&gt;从 Stop-the-World 到增量
+&lt;/h2&gt;&lt;h3 id="lua-50简单的代价"&gt;Lua 5.0：简单的代价
+&lt;/h3&gt;&lt;p&gt;在 Lua 5.0 时代，GC 算法非常朴素：&lt;strong&gt;双倍阈值，全量回收&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：当内存使用量达到上次 GC 后的两倍时，虚拟机暂停所有业务逻辑，跑一遍完整的“标记-清除”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：这就是著名的 &lt;strong&gt;Stop-the-World (STW)&lt;/strong&gt;。如果你的 Lua 内存占用了 1GB，GC 触发的那一瞬间，整个游戏或服务可能会卡顿几百毫秒甚至更久。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="lua-51三色增量标记tri-color-incremental-mark--sweep"&gt;Lua 5.1+：三色增量标记（Tri-color Incremental Mark &amp;amp; Sweep）
+&lt;/h3&gt;&lt;p&gt;为了解决卡顿，Lua 5.1 引入了增量 GC。GC 过程与业务代码交替运行。&lt;/p&gt;
+&lt;p&gt;为了实现“可中断、可恢复”的扫描，Lua 引入了&lt;strong&gt;三色标记法&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id="核心算法三色标记与双白设计"&gt;核心算法：三色标记与双白设计
+&lt;/h2&gt;&lt;p&gt;GC 的本质是从根节点（_G、Registry、栈）出发，找到所有可达对象。在增量扫描过程中，对象被标记为三种颜色：&lt;/p&gt;
+&lt;h3 id="颜色的含义"&gt;颜色的含义
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;⚪ 白色 (White)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：当前还未被 GC 访问到的对象，或者已死亡的对象。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;初始状态&lt;/strong&gt;：所有新创建的对象默认为白色。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结局&lt;/strong&gt;：如果 GC 结束后还是白色，说明不可达，&lt;strong&gt;回收&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;⚫ 黑色 (Black)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;已扫描完毕&lt;/strong&gt;。该对象及其引用的所有子对象都已经被访问过了。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;特性&lt;/strong&gt;：GC 这一轮不会再回头看它。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;🔘 灰色 (Gray)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;待处理&lt;/strong&gt;。该对象已被访问（从白色变成了灰色），但它引用的子对象还没扫描完。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;作用&lt;/strong&gt;：灰色是当前扫描的边缘（Frontier），保存在一个链表中。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="巧妙的双白设计-the-two-whites"&gt;巧妙的“双白”设计 (The Two Whites)
+&lt;/h3&gt;&lt;p&gt;我在研究源码时发现一个有趣的细节：Lua 的白色其实细分为 &lt;strong&gt;White1&lt;/strong&gt; 和 &lt;strong&gt;White2&lt;/strong&gt;。这是为了解决什么问题？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;： GC 标记阶段已经快结束了（大部分是黑色），此时业务代码突然创建了一个新对象。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;新对象默认是&lt;strong&gt;白色&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;如果不加区分，在接下来的“清除阶段”，GC 会认为这个白色的新对象是“没被引用的垃圾”并把它回收掉——&lt;strong&gt;这会导致严重 Bug&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;解决方案&lt;/strong&gt;： Lua 使用一个全局的位掩码 &lt;code&gt;CurrentWhite&lt;/code&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;本轮 GC&lt;/strong&gt;：只回收标记为“旧白色”的对象。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;新创建对象&lt;/strong&gt;：标记为“新白色”（CurrentWhite）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：新对象在本轮 GC 中被视为“安全”，留到下一轮再处理。在清除阶段结束后，Lua 会轮转 &lt;code&gt;CurrentWhite&lt;/code&gt; 的值。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="状态机的流转gc-的生命周期"&gt;状态机的流转：GC 的生命周期
+&lt;/h2&gt;&lt;p&gt;Lua 的增量 GC 是通过一个状态机驱动的。每次调用 &lt;code&gt;luaC_step&lt;/code&gt;，GC 就会向前推进一步。以下是主要的阶段：&lt;/p&gt;
+&lt;h3 id="-gcspause-暂停初始化"&gt;① GCSpause (暂停/初始化)
+&lt;/h3&gt;&lt;p&gt;GC 的起点。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;将根节点（主线程、全局表 _G、Registry 等）标记为&lt;strong&gt;灰色&lt;/strong&gt;，并加入灰色链表。&lt;/li&gt;
+&lt;li&gt;此时，通过根节点的一波操作，我们有了第一批待扫描的灰色对象。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcspropagate-传播---最耗时的阶段"&gt;② GCSpropagate (传播 - 最耗时的阶段)
+&lt;/h3&gt;&lt;p&gt;这是“增量”体现最明显的地方。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：从灰色链表中弹出一个对象，将其标记为&lt;strong&gt;黑色&lt;/strong&gt;，然后遍历它引用的所有子对象：&lt;/li&gt;
+&lt;li&gt;如果是白色，将其染成&lt;strong&gt;灰色&lt;/strong&gt;并加入链表。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;控制&lt;/strong&gt;：这个过程不是一次性做完的，而是受 &lt;code&gt;gcstepmul&lt;/code&gt; 控制，每次只处理一部分就暂停，把 CPU 让给业务逻辑。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcsatomic-原子阶段---必须一次做完"&gt;③ GCSatomic (原子阶段 - 必须一次做完)
+&lt;/h3&gt;&lt;p&gt;这是这一轮 GC 中唯一需要 Stop-the-World 的时刻，但通常很快。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;目的&lt;/strong&gt;：因为 Propagate 阶段是并发的，业务代码可能在此期间修改了引用（比如把一个白色对象赋值给了一个已经黑色的 Table）。如果不修正，那个白色对象会被误删。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol&gt;
+&lt;li&gt;重新遍历“灰名单”（GrayAgain，由写屏障产生，详见下文）。&lt;/li&gt;
+&lt;li&gt;扫描弱引用表（Weak Tables）。&lt;/li&gt;
+&lt;li&gt;完成所有剩余的标记工作。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="-gcssweepstring-字符串清理"&gt;④ GCSsweepstring (字符串清理)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;特点&lt;/strong&gt;：Lua 的短字符串是单独管理的（通常存储在全局哈希表中）。因为字符串没有子引用，清理非常快，直接从哈希表中移除未标记的字符串。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcssweep-普通对象清理"&gt;⑤ GCSsweep (普通对象清理)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：遍历所有 GCObject 链表。&lt;/li&gt;
+&lt;li&gt;如果是&lt;strong&gt;黑色&lt;/strong&gt;：说明活着，重置为当前白色（为下一轮做准备）。&lt;/li&gt;
+&lt;li&gt;如果是&lt;strong&gt;旧白色&lt;/strong&gt;：说明死了，&lt;strong&gt;free&lt;/strong&gt; 掉内存。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcsfinalize-终结"&gt;⑥ GCSfinalize (终结)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;处理所有实现了 &lt;code&gt;__gc&lt;/code&gt; 元方法的 Userdata。这些对象不会立即释放，而是会被放入一个单独的列表，等待虚拟机调用它们的析构函数。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="并发下的黑指向白与写屏障"&gt;并发下的“黑指向白”与写屏障
+&lt;/h2&gt;&lt;p&gt;在 &lt;code&gt;GCSpropagate&lt;/code&gt; 阶段，GC 和业务逻辑是交替运行的。这就带来了一个严重的&lt;strong&gt;数据竞争&lt;/strong&gt;问题。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;问题场景&lt;/strong&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;GC 标记了 Table A 为&lt;strong&gt;黑色&lt;/strong&gt;（认为 A 已经扫描完了）。&lt;/li&gt;
+&lt;li&gt;业务代码执行 &lt;code&gt;A.x = B&lt;/code&gt;，其中 B 是一个&lt;strong&gt;白色&lt;/strong&gt;对象。&lt;/li&gt;
+&lt;li&gt;因为 A 已经是黑色，GC 不会再扫描它。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：B 作为一个被引用的对象，却因为没被扫描到，保持白色。在清除阶段，B 会被当垃圾回收，导致 &lt;code&gt;A.x&lt;/code&gt; 变成了野指针！&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="解决方案写屏障-write-barrier"&gt;解决方案：写屏障 (Write Barrier)
+&lt;/h3&gt;&lt;p&gt;为了维护**“黑色对象不能指向白色对象”**这一不变量（Invariant），Lua 在每次修改引用（table set/assignment）时，会触发写屏障。&lt;/p&gt;
+&lt;p&gt;写屏障有两种主要形式：&lt;/p&gt;
+&lt;h4 id="1-前进屏障-forward-barrier---把白色染灰"&gt;1. 前进屏障 (Forward Barrier) - &amp;ldquo;把白色染灰&amp;rdquo;
+&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障会立即把 &lt;strong&gt;B 染成灰色&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：既然 A 引用了 B，那 B 肯定是有用的，赶紧把 B 拉进待扫描清单。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于将新对象赋值给老对象时。用于 Closure (Upvalues)、Userdata 等。因为这些对象通常不像 Table 那样频繁修改引用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id="2-后退屏障-backward-barrier---把黑色回退变灰"&gt;2. 后退屏障 (Backward Barrier) - &amp;ldquo;把黑色回退变灰&amp;rdquo;
+&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障把 &lt;strong&gt;A 变回灰色&lt;/strong&gt;，扔进 &lt;code&gt;grayagain&lt;/code&gt; 列表。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：A 你虽然扫过了，但你现在又有了新欢，GC 稍后得回头再查你一次。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于 &lt;code&gt;Table&lt;/code&gt; 等容器。这是因为 Table 容易频繁变动，如果用前进屏障（把子对象变灰），下次 Table 再变动时又要触发屏障；而把 Table 变灰后，它就留在 Gray 链表中，之后再往里面塞白色对象就不需要触发屏障了（因为父对象已经是灰的了）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="源码窥探"&gt;源码窥探
+&lt;/h3&gt;&lt;p&gt;让我们看看 Lua 内部宏 &lt;code&gt;luaC_barrier&lt;/code&gt; 的简化逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 伪代码逻辑：写屏障 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_barrier(L, p, v) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* p 是父对象(Table)，v 是子对象(Value) */ \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isblack(p) &amp;amp;&amp;amp; iswhite(v)) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 触发屏障：黑色指向了白色 */ \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_barrier_(L, obj2gco(p), obj2gco(v)); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;void luaC_barrier_ (lua_State *L, GCObject *p, GCObject *v) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 保持黑白不变性 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isdead(L, v)) return; // 已经死的不管
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 策略：通常是将 v (子对象) 标灰 (Forward Barrier)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 或者将 p (父对象) 放入 grayagain 列表 (Backward Barrier)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; reallymarkobject(L, v);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;正是这个 &lt;code&gt;luaC_barrier&lt;/code&gt;，保证了增量 GC 的正确性。它就像一个监视器，拦截了所有的赋值操作。&lt;/p&gt;
+&lt;h2 id="gc触发的时机"&gt;GC触发的时机
+&lt;/h2&gt;&lt;p&gt;假设我们执行以下代码：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;local i = 1234
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这行代码会触发 GC 吗？答案是&lt;strong&gt;不会&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;根据 Lua 的内存模型（如上文 &lt;code&gt;TValue&lt;/code&gt; 结构所示）：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;值类型（Value Types）&lt;/strong&gt;：如 &lt;code&gt;nil&lt;/code&gt;, &lt;code&gt;boolean&lt;/code&gt;, &lt;code&gt;number&lt;/code&gt; (integer/float)。这些数据直接存放在 Lua 栈的 &lt;code&gt;TValue&lt;/code&gt; 结构体中。它们随着栈帧的销毁而自动消失，&lt;strong&gt;不涉及堆内存分配&lt;/strong&gt;（malloc），因此不计入 GC 的债务（GCdebt），自然也不会触发 GC 步进。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;引用类型（Reference Types）&lt;/strong&gt;：如 &lt;code&gt;table&lt;/code&gt;, &lt;code&gt;function&lt;/code&gt;, &lt;code&gt;string&lt;/code&gt; (长字符串), &lt;code&gt;userdata&lt;/code&gt;。这些对象存活在堆上，才是 GC 主要“追杀”的目标。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在 Lua 虚拟机源码中，几乎所有涉及内存分配的操作（如 &lt;code&gt;lua_newtable&lt;/code&gt;, &lt;code&gt;lua_pushstring&lt;/code&gt;）之后，都会调用一个检查宏：&lt;strong&gt;&lt;code&gt;luaC_checkGC&lt;/code&gt;&lt;/strong&gt;。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_checkGC(L) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (G(L)-&amp;gt;GCdebt &amp;gt; 0) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_step(L); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; condchangemem(L,pre,pos); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;GCdebt&lt;/code&gt; (GC 债务)&lt;/strong&gt;：这是一个核心概念。每当你分配 1 字节内存，&lt;code&gt;GCdebt&lt;/code&gt; 就会增加 1。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;判断逻辑&lt;/strong&gt;：只要“债务”大于 0，Lua 就会认为“如果你制造了垃圾（或者申请了新内存），你就得负责清理一点垃圾”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;luaC_step&lt;/code&gt;&lt;/strong&gt;：这就是执行一次 GC“步进”的函数。它不会跑完整个 GC 流程，而是只跑一小步（具体跑多远，由 &lt;code&gt;stepmul&lt;/code&gt; 决定）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="控制-gc-的速率"&gt;控制 GC 的速率
+&lt;/h2&gt;&lt;p&gt;了解了原理，我们就能看懂 &lt;code&gt;collectgarbage&lt;/code&gt; 的两个参数了：&lt;/p&gt;
+&lt;h3 id="pause-暂停系数"&gt;&lt;code&gt;pause&lt;/code&gt; (暂停系数)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：GC的间歇率, 将 GCdebt 设置为一个巨大的负数来实现的, 默认值200（即 200%）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：如果当前内存是 10MB，GC 结束后回收到 5MB。那么下一次 GC 启动的阈值是 &lt;code&gt;5MB * 200% = 10MB&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;值越小，GC 越勤快，内存占用越低，但 CPU 消耗越高。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;static void setpause (global_State *g) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem threshold, debt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem estimate = g-&amp;gt;GCestimate / 100; // 获取估算内存
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem pause = (g-&amp;gt;gcpause != 0) ? g-&amp;gt;gcpause : 200; // 默认 200
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 计算我们要等待多少内存分配 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; threshold = (pause * estimate);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 设置债务 = 估算值 - 阈值
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; 因为 阈值 通常 &amp;gt; 估算值，所以这里 debt 是负数
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; debt = gettotalbytes(g) - threshold;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaE_setdebt(g, debt);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="stepmul-步进倍率"&gt;&lt;code&gt;stepmul&lt;/code&gt; (步进倍率)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：控制 GC 扫描的速度。默认值 200(200%)。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：分配了 1 字节内存（增加了 1 字节债务）,GC 需要执行等同于 2 字节内存的工作量，才能把这 1 字节的债务“抵消”掉。&lt;/li&gt;
+&lt;li&gt;如果你发现内存飙升得比 GC 回收得快（Alloc &amp;gt; Free），说明 GC 跑慢了，需要&lt;strong&gt;调大&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;如果你发现游戏明显卡顿，可能是 GC 一次步进占用 CPU 太多，尝试&lt;strong&gt;调小&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt; 让切片更细。&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>Lua Table</title><link>https://WeissGoat.github.io/WBlog/p/lua-table/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-table/</guid><description>&lt;h1 id="lua-table-源码剖析混合数据结构的艺术"&gt;Lua Table 源码剖析：混合数据结构的艺术
+&lt;/h1&gt;&lt;p&gt;在 Lua 的设计哲学中，Table 是唯一的复合数据结构。它既要扮演数组（Array）的角色，又要胜任哈希表（Hash Map）的工作。这种“万金油”的特性背后，隐藏着非常精妙的设计思路。&lt;/p&gt;
+&lt;p&gt;最近在研究 Lua 源码（基于 Lua 5.3/5.4 逻辑），整理了一些关于 Table 内部实现的笔记，在此记录并分享一下关于其数据结构、内存布局、冲突解决以及 Rehash 机制的探索。&lt;/p&gt;
+&lt;h2 id="1-核心数据结构混合存储的基石"&gt;1. 核心数据结构：混合存储的基石
+&lt;/h2&gt;&lt;p&gt;Lua Table 的高效由其底层的 &lt;code&gt;struct Table&lt;/code&gt; 决定。从源码中我们可以清晰地看到，它并非单纯的哈希表，而是&lt;strong&gt;数组&lt;/strong&gt;与&lt;strong&gt;哈希表&lt;/strong&gt;的结合体。&lt;/p&gt;
+&lt;h3 id="11-table-结构体定义"&gt;1.1 Table 结构体定义
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;typedef struct Table {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; CommonHeader;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; lu_byte flags; /* 1&amp;lt;&amp;lt;p means tagmethod(p) is not present (元方法缓存) */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; lu_byte lsizenode; /* 哈希表长度的对数，即 hash_size = 2^lsizenode */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; unsigned int alimit;/* 数组部分的“逻辑”大小 (即 sizearray) */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TValue *array; /* 数组部分指针 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; Node *node; /* 哈希桶数组起始指针 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; Node *lastfree; /* 指向哈希部分最后一个空闲位置，用于快速插入 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; struct Table *metatable; /* 元表 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; GCObject *gclist;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;} Table;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;设计解读：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;双重存储&lt;/strong&gt;：&lt;code&gt;array&lt;/code&gt; 指针管理连续内存，用于存放整数键（1..n）；&lt;code&gt;node&lt;/code&gt; 指针管理哈希桶，用于存放其他键或离散的整数键。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;空间换时间&lt;/strong&gt;：&lt;code&gt;lastfree&lt;/code&gt; 指针的设计非常巧妙，它避免了每次插入时线性扫描寻找空位，将查找空闲位置的复杂度尽量降低。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;lsizenode&lt;/strong&gt;：哈希表的大小始终保持为 2 的幂次，这里存储的是幂次（log2），省去了存储实际大小的内存，计算时位移即可。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="12-节点node与键key"&gt;1.2 节点（Node）与键（Key）
+&lt;/h3&gt;&lt;p&gt;哈希部分的节点结构如下：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;typedef union TKey {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; struct {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TValuefields;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; struct Node *next; /* 链表法解决冲突，指向下一个冲突节点 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } nk;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TValue tvk;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;} TKey;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;typedef struct Node {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TValue i_val;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TKey i_key;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;} Node;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这里 &lt;code&gt;Node&lt;/code&gt; 包含了 Key 和 Value。Key 是一个 union，为了内存对齐和访问效率，当发生哈希冲突时，通过 &lt;code&gt;next&lt;/code&gt; 指针形成单向链表。&lt;/p&gt;
+&lt;h2 id="2-键的归属数组还是哈希"&gt;2. 键的归属：数组还是哈希？
+&lt;/h2&gt;&lt;p&gt;当我们执行 &lt;code&gt;t[k] = v&lt;/code&gt; 时，Lua 是如何决定把数据存在 &lt;code&gt;array&lt;/code&gt; 还是 &lt;code&gt;node&lt;/code&gt; 里的？&lt;/p&gt;
+&lt;h3 id="21-整数键的vip-通道"&gt;2.1 整数键的“VIP 通道”
+&lt;/h3&gt;&lt;p&gt;一般情况下，正整数键（如 &lt;code&gt;t[1]&lt;/code&gt;, &lt;code&gt;t[100]&lt;/code&gt;）会优先尝试放入数组部分。但并非所有整数都会进入数组，必须满足&lt;strong&gt;利用率原则&lt;/strong&gt;。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;核心规则&lt;/strong&gt;：包含当前 key 的区间 $[1, 2^n]$ 内，非空元素数量必须大于 $2^{n-1}$（即利用率 &amp;gt; 50%）。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;源码佐证 (&lt;code&gt;ltable.c&lt;/code&gt;)&lt;/strong&gt;： Lua 通过 &lt;code&gt;computesizes&lt;/code&gt; 函数来计算数组的最佳大小，代码清晰地展示了“&amp;gt; 50%”的判断逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 计算数组部分的最佳大小 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;static unsigned int computesizes (unsigned int nums[], unsigned int *narray) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; int i;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; unsigned int twotoi; /* 2^i */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; unsigned int a = 0; /* 统计小于 2^i 的元素个数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; unsigned int na = 0; /* 最终落入数组部分的元素个数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; unsigned int optimal = 0; /* 最佳数组大小 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 循环遍历每个 2^i 区间 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; for (i = 0, twotoi = 1; twotoi/2 &amp;lt; *narray; i++, twotoi *= 2) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (nums[i] &amp;gt; 0) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; a += nums[i];
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (a &amp;gt; twotoi/2) { /* 核心判断：利用率 &amp;gt; 50% */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; optimal = twotoi;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; na = a;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; }
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; }
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; }
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; *narray = optimal;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; return na;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;举个例子&lt;/strong&gt;： 如果你创建了一个表 &lt;code&gt;t = {[1]=1, [1000]=1}&lt;/code&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;1&lt;/code&gt; 在数组部分。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;1000&lt;/code&gt; 虽然是整数，但如果强行扩容数组到 1000，中间会有 998 个空洞，不满足 &lt;code&gt;a &amp;gt; twotoi/2&lt;/code&gt;。因此，&lt;code&gt;1000&lt;/code&gt; 会被当作普通 Key 扔进哈希部分。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="22-哈希部分的收容所"&gt;2.2 哈希部分的“收容所”
+&lt;/h3&gt;&lt;p&gt;以下情况 Key 会进入哈希表：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;非整数类型&lt;/strong&gt;：字符串、Table、Userdata 等。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;越界的整数&lt;/strong&gt;：数值极大，或者像上面提到的过于稀疏的整数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;负数&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="3-冲突解决brents-method-的变种"&gt;3. 冲突解决：Brent&amp;rsquo;s Method 的变种
+&lt;/h2&gt;&lt;p&gt;这是 Lua Table 实现中最“骚”的操作之一。&lt;/p&gt;
+&lt;p&gt;通常哈希表解决冲突用的是&lt;strong&gt;开链法（Open Addressing with Chaining）&lt;/strong&gt;，但 Lua 为了节省内存，并没有在这个链表之外单独分配内存，而是直接利用哈希桶数组中未被使用的槽位。&lt;/p&gt;
+&lt;h3 id="31-插入逻辑insert"&gt;3.1 插入逻辑（Insert）
+&lt;/h3&gt;&lt;p&gt;当我们要插入一个新的 Key (&lt;code&gt;new_key&lt;/code&gt;)，算出它应该在的位置 &lt;code&gt;main_pos&lt;/code&gt;，却发现那里已经有“人”了 (&lt;code&gt;old_node&lt;/code&gt;)，Lua 会根据 &lt;code&gt;old_node&lt;/code&gt; 的身份采取不同策略。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;源码佐证 (&lt;code&gt;luaH_newkey&lt;/code&gt;)&lt;/strong&gt;：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;span class="lnt"&gt;42
+&lt;/span&gt;&lt;span class="lnt"&gt;43
+&lt;/span&gt;&lt;span class="lnt"&gt;44
+&lt;/span&gt;&lt;span class="lnt"&gt;45
+&lt;/span&gt;&lt;span class="lnt"&gt;46
+&lt;/span&gt;&lt;span class="lnt"&gt;47
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-gdscript3" data-lang="gdscript3"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;插入新键的核心逻辑&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="err"&gt;简化版&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;TValue&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;luaH_newkey&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;lua_State&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;Table&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="k"&gt;const&lt;/span&gt; &lt;span class="n"&gt;TValue&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="ne"&gt;Node&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;ttisnil&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="n"&gt;luaG_runerror&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;table index is nil&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="mf"&gt;1.&lt;/span&gt; &lt;span class="err"&gt;计算主位置&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;Main&lt;/span&gt; &lt;span class="n"&gt;Position&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;mainposition&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="mf"&gt;2.&lt;/span&gt; &lt;span class="err"&gt;如果主位置已被占用&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="o"&gt;!&lt;/span&gt;&lt;span class="n"&gt;ttisnil&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;gval&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="o"&gt;||&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="n"&gt;dummynode&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="ne"&gt;Node&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;获取空闲位置&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;lastfree&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="ne"&gt;Node&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;getfreepos&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="n"&gt;NULL&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;没位置了？扩容&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;rehash&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;luaH_set&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;计算占位者&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;old_node&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;&lt;span class="err"&gt;原本该在的主位置&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;othern&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;mainposition&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;keyfromval&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;));&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt; &lt;span class="o"&gt;!=&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="n"&gt;Case&lt;/span&gt; &lt;span class="n"&gt;A&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="err"&gt;鸠占鹊巢&lt;/span&gt; &lt;span class="o"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="err"&gt;把&lt;/span&gt; &lt;span class="n"&gt;old_node&lt;/span&gt; &lt;span class="err"&gt;赶到&lt;/span&gt; &lt;span class="n"&gt;free&lt;/span&gt; &lt;span class="n"&gt;pos&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;!=&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;othern&lt;/span&gt; &lt;span class="o"&gt;+=&lt;/span&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;找到指向&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="err"&gt;的前驱&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;othern&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;cast_int&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;othern&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;修正链表指向新位置&lt;/span&gt; &lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;搬迁数据&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;腾出&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="err"&gt;给新键，因为&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="err"&gt;是新键的主位置&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;setnilvalue&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;gval&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;));&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="n"&gt;Case&lt;/span&gt; &lt;span class="n"&gt;B&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="err"&gt;原住民冲突&lt;/span&gt; &lt;span class="o"&gt;-&amp;gt;&lt;/span&gt; &lt;span class="err"&gt;新键只能去&lt;/span&gt; &lt;span class="n"&gt;free&lt;/span&gt; &lt;span class="n"&gt;pos&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;!=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;cast_int&lt;/span&gt;&lt;span class="p"&gt;((&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;f&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;头插法：链在&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="err"&gt;后面&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;cast_int&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;f&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;mp&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;f&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;setnodekey&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;i_key&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;gval&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;mp&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;情况 A：鸠占鹊巢&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;如果 &lt;code&gt;old_node&lt;/code&gt; 是被挤到这里的（即 &lt;code&gt;othern != mp&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：Lua 把它挪到 &lt;code&gt;lastfree&lt;/code&gt;，把 &lt;code&gt;main_pos&lt;/code&gt; 抢回来给 &lt;code&gt;new_key&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;目的&lt;/strong&gt;：保证 &lt;code&gt;new_key&lt;/code&gt; 这种“原住民”能直接找到位置，减少后续查找的开销。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;情况 B：原住民冲突&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;如果 &lt;code&gt;old_node&lt;/code&gt; 本来就该待在这里。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：&lt;code&gt;new_key&lt;/code&gt; 去 &lt;code&gt;lastfree&lt;/code&gt;，并链接在 &lt;code&gt;old_node&lt;/code&gt; 后面。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这种机制被称为 &lt;strong&gt;Chained Scatter Table&lt;/strong&gt;，它充分利用了数组空间，避免了由于大量微小对象分配导致的内存碎片。&lt;/p&gt;
+&lt;h2 id="4-动态扩容rehash-的艺术"&gt;4. 动态扩容：Rehash 的艺术
+&lt;/h2&gt;&lt;p&gt;Table 的空间不是固定的。当空间不足或利用率失衡时，会触发 Rehash。&lt;/p&gt;
+&lt;h3 id="41-触发时机"&gt;4.1 触发时机
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;插入新键且空间已满&lt;/strong&gt;：当我们赋值一个新键，而 Table 既没有数组空间，也没有哈希空位时。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;注意&lt;/strong&gt;：将某个 Key 置为 &lt;code&gt;nil&lt;/code&gt; &lt;strong&gt;不会&lt;/strong&gt;立即触发 Rehash（为了防止频繁的内存抖动）。只有在空间不足需要重新评估时，才会回收 &lt;code&gt;nil&lt;/code&gt; 占用的空间。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="42-rehash-的三部曲"&gt;4.2 Rehash 的三部曲
+&lt;/h3&gt;&lt;p&gt;Rehash 是一个相对昂贵的操作，Lua 必须一次性重新计算数组和哈希两部分的最佳大小。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;统计（Counting）&lt;/strong&gt;： 遍历整个 Table（包括现有的 Array 和 Hash 部分），统计所有正整数键的数量，并按 $2^n$ 的区间（1-2, 3-4, 5-8&amp;hellip;）进行分桶统计。同时统计非整数键的总数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;定界（Sizing）&lt;/strong&gt;： 计算数组部分的最佳大小 &lt;code&gt;sizearray&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;算法：找到最大的 $N$（$2$ 的幂），使得 $[1, N]$ 区间内的整数键数量 $\ge N/2$。&lt;/li&gt;
+&lt;li&gt;凡是小于等于 $N$ 的整数放入新数组，其余放入新哈希表。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol start="3"&gt;
+&lt;li&gt;&lt;strong&gt;搬迁（Relocation）&lt;/strong&gt;：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;申请新的 Array 和 Hash 内存块。&lt;/li&gt;
+&lt;li&gt;将数据搬运过去（重新计算哈希值）。&lt;/li&gt;
+&lt;li&gt;释放旧内存。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这解释了为什么 Lua Table 既能像 C 数组一样紧凑高效，又能像 Python Dict 一样灵活。&lt;/p&gt;
+&lt;h2 id="5-迭代器的秘密pairs-与-ipairs"&gt;5. 迭代器的秘密：pairs 与 ipairs
+&lt;/h2&gt;&lt;p&gt;我们在写 Lua 时常用的两种遍历方式，其底层性能差异巨大。&lt;/p&gt;
+&lt;h3 id="51-ipairs序列专用"&gt;5.1 ipairs：序列专用
+&lt;/h3&gt;&lt;p&gt;&lt;code&gt;ipairs&lt;/code&gt; 是为**序列（Sequence）**量身定做的。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：维护一个内部计数器 &lt;code&gt;i&lt;/code&gt;，从 1 开始递增。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;寻址&lt;/strong&gt;：Lua 内部会先判断 &lt;code&gt;i&lt;/code&gt; 是否在 &lt;code&gt;array&lt;/code&gt; 的范围内。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;源码佐证 (&lt;code&gt;luaH_getint&lt;/code&gt;)&lt;/strong&gt;： 这是整数查找的入口函数，清晰展示了“先查数组，再查哈希”的逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-gdscript3" data-lang="gdscript3"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;const&lt;/span&gt; &lt;span class="n"&gt;TValue&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;luaH_getint&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;Table&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;lua_Integer&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="mf"&gt;1.&lt;/span&gt; &lt;span class="err"&gt;数组部分快速查找&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;Fast&lt;/span&gt; &lt;span class="ne"&gt;Path&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;这里的&lt;/span&gt; &lt;span class="n"&gt;alimit&lt;/span&gt; &lt;span class="err"&gt;就是数组的逻辑大小&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;l_castS2U&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;&lt;/span&gt; &lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;alimit&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;array&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;key&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;];&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="mf"&gt;2.&lt;/span&gt; &lt;span class="err"&gt;哈希部分查找&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;Slow&lt;/span&gt; &lt;span class="ne"&gt;Path&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="ne"&gt;Node&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;n&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;hashint&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;t&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="p"&gt;(;;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;ttisinteger&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;gkey&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;n&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class="n"&gt;ivalue&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;gkey&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;n&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="n"&gt;key&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;gval&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;n&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;找到了&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="ne"&gt;int&lt;/span&gt; &lt;span class="n"&gt;nx&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;gnext&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;n&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;nx&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="k"&gt;break&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;n&lt;/span&gt; &lt;span class="o"&gt;+=&lt;/span&gt; &lt;span class="n"&gt;nx&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="o"&gt;/*&lt;/span&gt; &lt;span class="err"&gt;沿着冲突链查找&lt;/span&gt; &lt;span class="o"&gt;*/&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;luaO_nilobject&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;在范围内&lt;/strong&gt;：直接通过指针偏移 &lt;code&gt;array[i]&lt;/code&gt; 读取，这几乎就是 C 语言访问数组的速度，&lt;strong&gt;极快&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;不在范围内&lt;/strong&gt;：才去查 Hash 表。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="52-pairs全量遍历"&gt;5.2 pairs：全量遍历
+&lt;/h3&gt;&lt;p&gt;&lt;code&gt;pairs&lt;/code&gt; 使用的是 &lt;code&gt;lua_next&lt;/code&gt; 函数。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;流程&lt;/strong&gt;：&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;先遍历数组部分&lt;/strong&gt;：从下标 0 到 &lt;code&gt;sizearray&lt;/code&gt; 线性扫描。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;再遍历哈希部分&lt;/strong&gt;：从哈希桶的第一个位置扫描到最后一个位置。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;顺序问题&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;对于&lt;strong&gt;纯数组&lt;/strong&gt;表（如 &lt;code&gt;{10, 20, 30}&lt;/code&gt;），因为只扫描数组部分，输出看起来是有序的。&lt;/li&gt;
+&lt;li&gt;一旦涉及哈希部分，顺序就是&lt;strong&gt;乱序&lt;/strong&gt;的。这是因为 Key 在哈希表中的物理位置取决于 Hash 算法和冲突时的插入顺序，与逻辑顺序无关。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;避坑指南&lt;/strong&gt;：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;不要依赖 &lt;code&gt;pairs&lt;/code&gt; 的遍历顺序，除非你确认表是纯数组且尚未发生过复杂的 Rehash。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h2 id="6-总结"&gt;6. 总结
+&lt;/h2&gt;&lt;p&gt;Lua Table 的源码实现体现了极强的&lt;strong&gt;工程实用主义&lt;/strong&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;混合结构&lt;/strong&gt;平衡了数组的 $O(1)$ 访问和哈希表的稀疏灵活性。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;50% 利用率原则&lt;/strong&gt;保证了数组空间不会被过度浪费。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;lastfree 冲突解决&lt;/strong&gt;最大化利用了预分配内存，减少了 &lt;code&gt;malloc&lt;/code&gt; 调用的开销。&lt;/li&gt;
+&lt;/ol&gt;</description></item><item><title>Lua 数据类型与GC对象</title><link>https://WeissGoat.github.io/WBlog/p/lua-%E6%95%B0%E6%8D%AE%E7%B1%BB%E5%9E%8B%E4%B8%8Egc%E5%AF%B9%E8%B1%A1/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-%E6%95%B0%E6%8D%AE%E7%B1%BB%E5%9E%8B%E4%B8%8Egc%E5%AF%B9%E8%B1%A1/</guid><description>&lt;h1 id="lua-源码手记数据类型与隐藏的-gc-对象"&gt;Lua 源码手记：数据类型与隐藏的 GC 对象
+&lt;/h1&gt;&lt;p&gt;最近在啃 Lua 的源码，主要想搞清楚一个问题：当我们写下 &lt;code&gt;local a = 1&lt;/code&gt; 随后又写 &lt;code&gt;a = &amp;quot;hello&amp;quot;&lt;/code&gt; 时，Lua 虚拟机底层到底发生了什么？&lt;/p&gt;
+&lt;p&gt;作为一个 Lua 开发者，我们习惯了“变量无类型，值有类型”的自由。但在 C 语言编写的虚拟机底层，内存是严苛且静态的。Lua 是如何在一个静态的 C 结构体中塞进千变万化的动态类型的？哪些数据是“活”在栈上的，哪些又是需要垃圾回收器（GC）费心照顾的？&lt;/p&gt;
+&lt;p&gt;本文将带你通过“显微镜”视角，从底层的 &lt;code&gt;TValue&lt;/code&gt; 结构开始，重新审视 Lua 的数据类型系统与内存管理策略。&lt;/p&gt;
+&lt;h2 id="一-源码揭秘万物之容器-tvalue"&gt;一、 源码揭秘：万物之容器 TValue
+&lt;/h2&gt;&lt;p&gt;在 Lua 虚拟机中，并没有“整数变量”或“字符串变量”的概念。无论是全局变量、局部变量，还是 Table 中的一个槽位，在底层 C 源码中，它们都由一个统一的数据结构表示：&lt;strong&gt;&lt;code&gt;TValue&lt;/code&gt;&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;TValue&lt;/code&gt; 的设计完美体现了 Lua 的核心哲学：&lt;strong&gt;Tagged Union（带标签的联合体）&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="11-核心结构定义"&gt;1.1 核心结构定义
+&lt;/h3&gt;&lt;p&gt;我们可以将 &lt;code&gt;TValue&lt;/code&gt; 想象成一个标准化的“通用快递盒”，它由两部分组成：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;标签 (Tag)&lt;/strong&gt;：说明书，标记盒子里装的是什么类型。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;值 (Value)&lt;/strong&gt;：实际货物，或者指向货物的取货单（指针）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;让我们看看 Lua 5.3+ 源码中的核心定义（位于 &lt;code&gt;lobject.h&lt;/code&gt;）：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 通用值联合体：同一时间只能存一种数据，保证内存紧凑 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;typedef union Value {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; GCObject *gc; /* collectable objects: 复杂对象（Table, String...）存指针 -&amp;gt; 指向堆内存 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; void *p; /* light userdata: 存纯指针 -&amp;gt; 直接存地址 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; int b; /* boolean: 存 0 或 1 -&amp;gt; 直接存整数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; lua_CFunction f; /* light C functions: 轻量级 C 函数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; lua_Integer i; /* integer numbers: 整数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; lua_Number n; /* float numbers: 浮点数 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;} Value;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* Lua 中的通用值结构 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define TValuefields Value value_; int tt_
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;typedef struct TValue {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; TValuefields;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;} TValue;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="12-它是如何工作的"&gt;1.2 它是如何工作的？
+&lt;/h3&gt;&lt;p&gt;当你写 &lt;code&gt;local a = 10&lt;/code&gt; 时，Lua 虚拟机做的事情是：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;找到 &lt;code&gt;a&lt;/code&gt; 对应的栈槽位（一个 &lt;code&gt;TValue&lt;/code&gt; 内存块）。&lt;/li&gt;
+&lt;li&gt;将 &lt;code&gt;tt_&lt;/code&gt; (标签) 设为 &lt;code&gt;LUA_TNUMINT&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;将 &lt;code&gt;value_.i&lt;/code&gt; (数据) 设为 &lt;code&gt;10&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;当你随后写 &lt;code&gt;a = {}&lt;/code&gt; 时：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;虚拟机在&lt;strong&gt;堆内存&lt;/strong&gt;中创建一个新的 Table 对象。&lt;/li&gt;
+&lt;li&gt;将 &lt;code&gt;a&lt;/code&gt; 的 &lt;code&gt;tt_&lt;/code&gt; 更新为 &lt;code&gt;LUA_TTABLE&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;将 &lt;code&gt;value_.gc&lt;/code&gt; 更新为指向那个 Table 的指针。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这种设计使得 Lua 的变量可以承载任何类型，因为它们本质上只是一个携带了类型标签的容器。&lt;/p&gt;
+&lt;h2 id="二-lua-的-8-种基本数据类型内存视角"&gt;二、 Lua 的 8 种基本数据类型：内存视角
+&lt;/h2&gt;&lt;p&gt;基于 &lt;code&gt;TValue&lt;/code&gt; 的存储方式，我们可以将 Lua 暴露给开发者的 8 种数据类型分为三大类。这直接关系到赋值操作的性能和 GC 的压力。&lt;/p&gt;
+&lt;h3 id="1-值类型-value-types--栈上的原住民"&gt;1. 值类型 (Value Types) —— 栈上的原住民
+&lt;/h3&gt;&lt;p&gt;这些类型的数据非常小，直接存储在 &lt;code&gt;TValue&lt;/code&gt; 结构体内部。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;nil (空)&lt;/strong&gt;：表示“无效值”。全局变量默认值。赋值 &lt;code&gt;nil&lt;/code&gt; 等同于删除。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;boolean (布尔)&lt;/strong&gt;：只有 &lt;code&gt;true&lt;/code&gt; 和 &lt;code&gt;false&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;em&gt;注意&lt;/em&gt;：Lua 中只有 &lt;code&gt;false&lt;/code&gt; 和 &lt;code&gt;nil&lt;/code&gt; 为假，数字 &lt;code&gt;0&lt;/code&gt; 是真。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;number (数值)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;Lua 5.3+ 分为 Integer (64位整型) 和 Float (双精度浮点)。&lt;/li&gt;
+&lt;li&gt;VM 会自动处理转换，通常无需感知。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;light userdata (轻量用户数据)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;特例&lt;/strong&gt;：它本质上是一个纯粹的 C 指针 (&lt;code&gt;void *&lt;/code&gt;)。Lua 把它当作一个数字处理，&lt;strong&gt;不管理&lt;/strong&gt;它的生命周期（生死由 C 端代码负责）。这是高性能交互的利器。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-gc-类型-gcobjects--堆上的住客"&gt;2. GC 类型 (GCObjects) —— 堆上的住客
+&lt;/h3&gt;&lt;p&gt;这些类型数据量大且结构复杂，&lt;code&gt;TValue&lt;/code&gt; 只存指针（&lt;code&gt;value_.gc&lt;/code&gt;）。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;string (字符串)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;不可变字符序列。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;String Interning (字符串驻留)&lt;/strong&gt;：Lua 会对短字符串进行唯一化处理，相同内容的短字符串在全局只有一份内存，比较时只需比较指针地址，速度极快。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;table (表)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;Lua 唯一的数据结构。&lt;/li&gt;
+&lt;li&gt;既是数组（Array，下标从1开始），也是字典（Hash Map）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;function (函数)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;第一类值（First-class）。&lt;/li&gt;
+&lt;li&gt;包含 C 函数和 Lua 函数（闭包）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;thread (线程)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;协程 (Coroutine) 的实现基础。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;userdata (完全用户数据)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;由 Lua 虚拟机分配内存的一块原始内存区域，支持 &lt;code&gt;__gc&lt;/code&gt; 元方法析构。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="三-谁在参与-gc内存管理揭秘"&gt;三、 谁在参与 GC？（内存管理揭秘）
+&lt;/h2&gt;&lt;p&gt;在 Lua 中，并不是所有变量都需要垃圾回收器（Garbage Collection, GC）操心。&lt;/p&gt;
+&lt;h3 id="31-gcobject-的秘密"&gt;3.1 GCObject 的秘密
+&lt;/h3&gt;&lt;p&gt;所有需要被 GC 管理的对象，在 C 层面都有一个共同的头部，叫做 &lt;code&gt;CommonHeader&lt;/code&gt;。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 所有 GC 对象通用的头部 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define CommonHeader GCObject *next; lu_byte tt; lu_byte marked
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;struct GCObject {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; CommonHeader; /* 包含：链表指针、类型标签、GC 颜色标记 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;};
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这就解释了为什么 Lua 可以统一管理不同类型的对象：因为它们强转为 &lt;code&gt;GCObject*&lt;/code&gt; 后，头部结构是一样的，GC 只需要扫描这个头部链表即可。&lt;/p&gt;
+&lt;h3 id="32-区分标准"&gt;3.2 区分标准
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;不参与 GC&lt;/strong&gt;：&lt;code&gt;nil&lt;/code&gt;, &lt;code&gt;boolean&lt;/code&gt;, &lt;code&gt;number&lt;/code&gt;, &lt;code&gt;light userdata&lt;/code&gt;。它们随栈帧生灭，无需 GC 介入。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;参与 GC&lt;/strong&gt;：&lt;code&gt;string&lt;/code&gt;, &lt;code&gt;table&lt;/code&gt;, &lt;code&gt;function&lt;/code&gt;, &lt;code&gt;userdata&lt;/code&gt;, &lt;code&gt;thread&lt;/code&gt;。它们在堆上分配，需要通过标记-清除（Mark-and-Sweep）算法回收。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="四-隐形的-gc-对象proto-与-upval"&gt;四、 隐形的 GC 对象：Proto 与 UpVal
+&lt;/h2&gt;&lt;p&gt;除了上述我们在 Lua 代码中能直接操作的类型外，Lua 虚拟机底层还有两个非常关键的内部对象也是由 GC 管理的。&lt;strong&gt;理解它们，是掌握 Lua 闭包 (Closure) 机制的钥匙。&lt;/strong&gt;&lt;/p&gt;
+&lt;h3 id="1-proto-函数原型--静态的蓝图"&gt;1. Proto (函数原型) —— 静态的蓝图
+&lt;/h3&gt;&lt;p&gt;你可以把 &lt;code&gt;Proto&lt;/code&gt; 看作是**“函数的编译模具”**。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;它是什么&lt;/strong&gt;：当 Lua 编译器编译一段代码时，生成的字节码（Bytecode）、常量表（Constants）、调试信息等&lt;strong&gt;静态数据&lt;/strong&gt;，都被打包存储在一个 &lt;code&gt;Proto&lt;/code&gt; 对象中。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;生命周期&lt;/strong&gt;：虽然它是静态的，但当你使用 &lt;code&gt;load&lt;/code&gt; 加载一段代码块时，系统会生成对应的 &lt;code&gt;Proto&lt;/code&gt;。如果这个模块被卸载，或者没有任何闭包再使用这个模具，&lt;code&gt;Proto&lt;/code&gt; 就需要被回收。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-upval-上值对象--闭包的灵魂"&gt;2. UpVal (上值对象) —— 闭包的灵魂
+&lt;/h3&gt;&lt;p&gt;这是 Lua 闭包机制最精妙的地方。&lt;code&gt;UpVal&lt;/code&gt; 是独立于函数栈帧存在的对象，用于存储闭包捕获的外部局部变量。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;为什么需要它？&lt;/strong&gt; 当一个函数返回时，它的栈帧会被销毁，原本存在栈上的局部变量也就消失了。如果内部函数（闭包）还引用了这个变量，怎么办？&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Open vs Closed 状态&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Open (开放)&lt;/strong&gt;：当父函数还在运行时，被捕获的变量还在栈上。此时 &lt;code&gt;UpVal&lt;/code&gt; 只是一个指针，指向栈上的那个位置。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Closed (关闭)&lt;/strong&gt;：当父函数返回，栈即将销毁时，Lua 会将变量的值&lt;strong&gt;复制&lt;/strong&gt;到 &lt;code&gt;UpVal&lt;/code&gt; 对象内部（堆内存），并将 &lt;code&gt;UpVal&lt;/code&gt; 指针指向自己。这就实现了“变量逃逸”。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;公式类比：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Lua Function (运行时闭包) = Proto (静态代码逻辑) + UpVals (动态环境上下文)&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这就是为什么两个闭包可以使用同一份代码（同一个 Proto），却拥有不同的状态（不同的 UpVals）。&lt;/p&gt;
+&lt;h2 id="五-总结与性能建议"&gt;五、 总结与性能建议
+&lt;/h2&gt;&lt;p&gt;通过重新审视 &lt;code&gt;TValue&lt;/code&gt; 和 GC 对象，我们可以得出一些写出高性能 Lua 代码的原则：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;赋值开销&lt;/strong&gt;：&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;number/boolean&lt;/code&gt; 赋值是内存拷贝（极快）。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;table/function&lt;/code&gt; 赋值是指针拷贝（极快）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;但是&lt;/strong&gt;，创建 &lt;code&gt;table&lt;/code&gt; (&lt;code&gt;{}&lt;/code&gt;) 或闭包 (&lt;code&gt;function() end&lt;/code&gt;) 是堆内存分配，相对较慢。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol start="2"&gt;
+&lt;li&gt;&lt;strong&gt;Light Userdata 的妙用&lt;/strong&gt;： 如果你只需要在 Lua 里持有一个 C++ 对象的句柄，且生命周期由 C++ 管理，请务必使用 &lt;code&gt;light userdata&lt;/code&gt;。它可以完全避开 GC 的扫描和追踪开销。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;闭包的代价&lt;/strong&gt;： 每创建一个新的闭包，不仅会创建一个 &lt;code&gt;Function&lt;/code&gt; 对象，如果涉及新的外部变量捕获，还可能创建新的 &lt;code&gt;UpVal&lt;/code&gt; 对象。在极高频调用的场景下（如游戏每帧 Update），应尽量避免在循环内创建匿名函数。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;GC 压力&lt;/strong&gt;： 字符串拼接（产生新 String 对象）和表的频繁创建销毁是 GC 卡顿的两大元凶。在性能敏感区，复用 Table（Object Pooling）永远是王道。&lt;/li&gt;
+&lt;/ol&gt;</description></item><item><title>hello world</title><link>https://WeissGoat.github.io/WBlog/p/hello-world/</link><pubDate>Mon, 29 Jan 2024 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/p/hello-world/</guid><description>&lt;p&gt;很幸运生活在一个技术爆炸的时代, 感觉未来充满着可能性&lt;/p&gt;
+&lt;p&gt;在这里展示我的生活, 我的思考, 我的成长&lt;/p&gt;</description></item><item><title>关于</title><link>https://WeissGoat.github.io/WBlog/%E5%85%B3%E4%BA%8E/</link><pubDate>Tue, 26 Jan 2021 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/%E5%85%B3%E4%BA%8E/</guid><description>&lt;p&gt;很幸运生活在一个技术爆炸的时代, 感觉未来充满着可能性&lt;/p&gt;
+&lt;p&gt;在这里展示我的生活, 我的思考, 我的成长&lt;/p&gt;</description></item><item><title>归档</title><link>https://WeissGoat.github.io/WBlog/archives/</link><pubDate>Tue, 28 May 2019 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/archives/</guid><description/></item><item><title>搜索</title><link>https://WeissGoat.github.io/WBlog/search/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/search/</guid><description/></item></channel></rss>

@@ -1,0 +1,260 @@
+<!doctype html><html lang=en-us dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="Lua Table 源码剖析：混合数据结构的艺术 在 Lua 的设计哲学中，Table 是唯一的复合数据结构。它既要扮演数组（Array）的角色，又要胜任哈希表（Hash Map）的工作。这种“万金油”的特性背后，隐藏着非常精妙的设计思路。\n"><title>Lua Table</title><link rel=canonical href=https://WeissGoat.github.io/WBlog/p/lua-table/><link rel=stylesheet href=/WBlog/scss/style.min.51098b80cc297c94c0f57786d4a04e7372774e5993b60facf53870128a79bf73.css><meta property='og:title' content="Lua Table"><meta property='og:description' content="Lua Table 源码剖析：混合数据结构的艺术 在 Lua 的设计哲学中，Table 是唯一的复合数据结构。它既要扮演数组（Array）的角色，又要胜任哈希表（Hash Map）的工作。这种“万金油”的特性背后，隐藏着非常精妙的设计思路。\n"><meta property='og:url' content='https://WeissGoat.github.io/WBlog/p/lua-table/'><meta property='og:site_name' content='白山羊'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Lua'><meta property='article:published_time' content='2024-02-05T18:00:00+08:00'><meta property='article:modified_time' content='2024-02-05T18:00:00+08:00'><meta name=twitter:title content="Lua Table"><meta name=twitter:description content="Lua Table 源码剖析：混合数据结构的艺术 在 Lua 的设计哲学中，Table 是唯一的复合数据结构。它既要扮演数组（Array）的角色，又要胜任哈希表（Hash Map）的工作。这种“万金油”的特性背后，隐藏着非常精妙的设计思路。\n"><link rel="shortcut icon" href=https://WeissGoat.github.io/WBlog/img/avatar.jpg></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/WBlog/><img src=https://WeissGoat.github.io/WBlog/img/avatar.jpg width height class=site-logo loading=lazy alt=Avatar></a></figure><div class=site-meta><h1 class=site-name><a href=/WBlog/>白山羊</a></h1><h2 class=site-description>To be continued...</h2></div></header><ol class=menu-social><li><a href=https://github.com/whitessheep target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/WBlog/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/WBlog/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/WBlog/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/WBlog/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav class=toc-nav id=TableOfContents><ol><li><a href=#1-核心数据结构混合存储的基石>1. 核心数据结构：混合存储的基石</a><ol><li><a href=#11-table-结构体定义>1.1 Table 结构体定义</a></li><li><a href=#12-节点node与键key>1.2 节点（Node）与键（Key）</a></li></ol></li><li><a href=#2-键的归属数组还是哈希>2. 键的归属：数组还是哈希？</a><ol><li><a href=#21-整数键的vip-通道>2.1 整数键的“VIP 通道”</a></li><li><a href=#22-哈希部分的收容所>2.2 哈希部分的“收容所”</a></li></ol></li><li><a href=#3-冲突解决brents-method-的变种>3. 冲突解决：Brent&rsquo;s Method 的变种</a><ol><li><a href=#31-插入逻辑insert>3.1 插入逻辑（Insert）</a></li></ol></li><li><a href=#4-动态扩容rehash-的艺术>4. 动态扩容：Rehash 的艺术</a><ol><li><a href=#41-触发时机>4.1 触发时机</a></li><li><a href=#42-rehash-的三部曲>4.2 Rehash 的三部曲</a></li></ol></li><li><a href=#5-迭代器的秘密pairs-与-ipairs>5. 迭代器的秘密：pairs 与 ipairs</a><ol><li><a href=#51-ipairs序列专用>5.1 ipairs：序列专用</a></li><li><a href=#52-pairs全量遍历>5.2 pairs：全量遍历</a></li></ol></li><li><a href=#6-总结>6. 总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/WBlog/categories/lua/ style=background-color:#efbeca;color:#3d0f1b>Lua</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/WBlog/p/lua-table/>Lua Table</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2024-02-05T18:00:00+08:00>2024年2月5日星期一</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 7 分钟</time></div></footer></div></header><aside class=article-toc><details><summary><div class=article-toc-title><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-right"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 6l6 6-6 6"/></svg>
+<span>目录</span></div></summary><nav class=toc-nav><ol><li><a href=#1-核心数据结构混合存储的基石>1. 核心数据结构：混合存储的基石</a><ol><li><a href=#11-table-结构体定义>1.1 Table 结构体定义</a></li><li><a href=#12-节点node与键key>1.2 节点（Node）与键（Key）</a></li></ol></li><li><a href=#2-键的归属数组还是哈希>2. 键的归属：数组还是哈希？</a><ol><li><a href=#21-整数键的vip-通道>2.1 整数键的“VIP 通道”</a></li><li><a href=#22-哈希部分的收容所>2.2 哈希部分的“收容所”</a></li></ol></li><li><a href=#3-冲突解决brents-method-的变种>3. 冲突解决：Brent&rsquo;s Method 的变种</a><ol><li><a href=#31-插入逻辑insert>3.1 插入逻辑（Insert）</a></li></ol></li><li><a href=#4-动态扩容rehash-的艺术>4. 动态扩容：Rehash 的艺术</a><ol><li><a href=#41-触发时机>4.1 触发时机</a></li><li><a href=#42-rehash-的三部曲>4.2 Rehash 的三部曲</a></li></ol></li><li><a href=#5-迭代器的秘密pairs-与-ipairs>5. 迭代器的秘密：pairs 与 ipairs</a><ol><li><a href=#51-ipairs序列专用>5.1 ipairs：序列专用</a></li><li><a href=#52-pairs全量遍历>5.2 pairs：全量遍历</a></li></ol></li><li><a href=#6-总结>6. 总结</a></li></ol></nav></details></aside><section class=article-content><h1 id=lua-table-源码剖析混合数据结构的艺术>Lua Table 源码剖析：混合数据结构的艺术</h1><p>在 Lua 的设计哲学中，Table 是唯一的复合数据结构。它既要扮演数组（Array）的角色，又要胜任哈希表（Hash Map）的工作。这种“万金油”的特性背后，隐藏着非常精妙的设计思路。</p><p>最近在研究 Lua 源码（基于 Lua 5.3/5.4 逻辑），整理了一些关于 Table 内部实现的笔记，在此记录并分享一下关于其数据结构、内存布局、冲突解决以及 Rehash 机制的探索。</p><h2 id=1-核心数据结构混合存储的基石>1. 核心数据结构：混合存储的基石</h2><p>Lua Table 的高效由其底层的 <code>struct Table</code> 决定。从源码中我们可以清晰地看到，它并非单纯的哈希表，而是<strong>数组</strong>与<strong>哈希表</strong>的结合体。</p><h3 id=11-table-结构体定义>1.1 Table 结构体定义</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-fallback data-lang=fallback><span class=line><span class=cl>typedef struct Table {
+</span></span><span class=line><span class=cl>    CommonHeader;
+</span></span><span class=line><span class=cl>    lu_byte flags;      /* 1&lt;&lt;p means tagmethod(p) is not present (元方法缓存) */
+</span></span><span class=line><span class=cl>    lu_byte lsizenode;  /* 哈希表长度的对数，即 hash_size = 2^lsizenode */
+</span></span><span class=line><span class=cl>    unsigned int alimit;/* 数组部分的“逻辑”大小 (即 sizearray) */
+</span></span><span class=line><span class=cl>    TValue *array;      /* 数组部分指针 */
+</span></span><span class=line><span class=cl>    Node *node;         /* 哈希桶数组起始指针 */
+</span></span><span class=line><span class=cl>    Node *lastfree;     /* 指向哈希部分最后一个空闲位置，用于快速插入 */
+</span></span><span class=line><span class=cl>    struct Table *metatable; /* 元表 */
+</span></span><span class=line><span class=cl>    GCObject *gclist;
+</span></span><span class=line><span class=cl>} Table;
+</span></span></code></pre></td></tr></table></div></div><p><strong>设计解读：</strong></p><ul><li><strong>双重存储</strong>：<code>array</code> 指针管理连续内存，用于存放整数键（1..n）；<code>node</code> 指针管理哈希桶，用于存放其他键或离散的整数键。</li><li><strong>空间换时间</strong>：<code>lastfree</code> 指针的设计非常巧妙，它避免了每次插入时线性扫描寻找空位，将查找空闲位置的复杂度尽量降低。</li><li><strong>lsizenode</strong>：哈希表的大小始终保持为 2 的幂次，这里存储的是幂次（log2），省去了存储实际大小的内存，计算时位移即可。</li></ul><h3 id=12-节点node与键key>1.2 节点（Node）与键（Key）</h3><p>哈希部分的节点结构如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-fallback data-lang=fallback><span class=line><span class=cl>typedef union TKey {
+</span></span><span class=line><span class=cl>    struct {
+</span></span><span class=line><span class=cl>        TValuefields;
+</span></span><span class=line><span class=cl>        struct Node *next; /* 链表法解决冲突，指向下一个冲突节点 */
+</span></span><span class=line><span class=cl>    } nk;
+</span></span><span class=line><span class=cl>    TValue tvk;
+</span></span><span class=line><span class=cl>} TKey;
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>typedef struct Node {
+</span></span><span class=line><span class=cl>    TValue i_val;
+</span></span><span class=line><span class=cl>    TKey i_key;
+</span></span><span class=line><span class=cl>} Node;
+</span></span></code></pre></td></tr></table></div></div><p>这里 <code>Node</code> 包含了 Key 和 Value。Key 是一个 union，为了内存对齐和访问效率，当发生哈希冲突时，通过 <code>next</code> 指针形成单向链表。</p><h2 id=2-键的归属数组还是哈希>2. 键的归属：数组还是哈希？</h2><p>当我们执行 <code>t[k] = v</code> 时，Lua 是如何决定把数据存在 <code>array</code> 还是 <code>node</code> 里的？</p><h3 id=21-整数键的vip-通道>2.1 整数键的“VIP 通道”</h3><p>一般情况下，正整数键（如 <code>t[1]</code>, <code>t[100]</code>）会优先尝试放入数组部分。但并非所有整数都会进入数组，必须满足<strong>利用率原则</strong>。</p><blockquote><p><strong>核心规则</strong>：包含当前 key 的区间 $[1, 2^n]$ 内，非空元素数量必须大于 $2^{n-1}$（即利用率 > 50%）。</p></blockquote><p><strong>源码佐证 (<code>ltable.c</code>)</strong>： Lua 通过 <code>computesizes</code> 函数来计算数组的最佳大小，代码清晰地展示了“> 50%”的判断逻辑：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-fallback data-lang=fallback><span class=line><span class=cl>/* 计算数组部分的最佳大小 */
+</span></span><span class=line><span class=cl>static unsigned int computesizes (unsigned int nums[], unsigned int *narray) {
+</span></span><span class=line><span class=cl>    int i;
+</span></span><span class=line><span class=cl>    unsigned int twotoi;  /* 2^i */
+</span></span><span class=line><span class=cl>    unsigned int a = 0;   /* 统计小于 2^i 的元素个数 */
+</span></span><span class=line><span class=cl>    unsigned int na = 0;  /* 最终落入数组部分的元素个数 */
+</span></span><span class=line><span class=cl>    unsigned int optimal = 0;  /* 最佳数组大小 */
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    /* 循环遍历每个 2^i 区间 */
+</span></span><span class=line><span class=cl>    for (i = 0, twotoi = 1; twotoi/2 &lt; *narray; i++, twotoi *= 2) {
+</span></span><span class=line><span class=cl>        if (nums[i] &gt; 0) {
+</span></span><span class=line><span class=cl>            a += nums[i];
+</span></span><span class=line><span class=cl>            if (a &gt; twotoi/2) {  /* 核心判断：利用率 &gt; 50% */
+</span></span><span class=line><span class=cl>                optimal = twotoi;
+</span></span><span class=line><span class=cl>                na = a;
+</span></span><span class=line><span class=cl>            }
+</span></span><span class=line><span class=cl>        }
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>    *narray = optimal;
+</span></span><span class=line><span class=cl>    return na;
+</span></span><span class=line><span class=cl>}
+</span></span></code></pre></td></tr></table></div></div><p><strong>举个例子</strong>： 如果你创建了一个表 <code>t = {[1]=1, [1000]=1}</code>。</p><ul><li><code>1</code> 在数组部分。</li><li><code>1000</code> 虽然是整数，但如果强行扩容数组到 1000，中间会有 998 个空洞，不满足 <code>a > twotoi/2</code>。因此，<code>1000</code> 会被当作普通 Key 扔进哈希部分。</li></ul><h3 id=22-哈希部分的收容所>2.2 哈希部分的“收容所”</h3><p>以下情况 Key 会进入哈希表：</p><ol><li><strong>非整数类型</strong>：字符串、Table、Userdata 等。</li><li><strong>越界的整数</strong>：数值极大，或者像上面提到的过于稀疏的整数。</li><li><strong>负数</strong>。</li></ol><h2 id=3-冲突解决brents-method-的变种>3. 冲突解决：Brent&rsquo;s Method 的变种</h2><p>这是 Lua Table 实现中最“骚”的操作之一。</p><p>通常哈希表解决冲突用的是<strong>开链法（Open Addressing with Chaining）</strong>，但 Lua 为了节省内存，并没有在这个链表之外单独分配内存，而是直接利用哈希桶数组中未被使用的槽位。</p><h3 id=31-插入逻辑insert>3.1 插入逻辑（Insert）</h3><p>当我们要插入一个新的 Key (<code>new_key</code>)，算出它应该在的位置 <code>main_pos</code>，却发现那里已经有“人”了 (<code>old_node</code>)，Lua 会根据 <code>old_node</code> 的身份采取不同策略。</p><p><strong>源码佐证 (<code>luaH_newkey</code>)</strong>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-gdscript3 data-lang=gdscript3><span class=line><span class=cl><span class=o>/*</span> <span class=err>插入新键的核心逻辑</span> <span class=p>(</span><span class=err>简化版</span><span class=p>)</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl><span class=n>TValue</span> <span class=o>*</span><span class=n>luaH_newkey</span> <span class=p>(</span><span class=n>lua_State</span> <span class=o>*</span><span class=n>L</span><span class=p>,</span> <span class=n>Table</span> <span class=o>*</span><span class=n>t</span><span class=p>,</span> <span class=k>const</span> <span class=n>TValue</span> <span class=o>*</span><span class=n>key</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=ne>Node</span> <span class=o>*</span><span class=n>mp</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=n>ttisnil</span><span class=p>(</span><span class=n>key</span><span class=p>))</span> <span class=n>luaG_runerror</span><span class=p>(</span><span class=n>L</span><span class=p>,</span> <span class=s2>&#34;table index is nil&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=o>/*</span> <span class=mf>1.</span> <span class=err>计算主位置</span> <span class=p>(</span><span class=n>Main</span> <span class=n>Position</span><span class=p>)</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>    <span class=n>mp</span> <span class=o>=</span> <span class=n>mainposition</span><span class=p>(</span><span class=n>t</span><span class=p>,</span> <span class=n>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=o>/*</span> <span class=mf>2.</span> <span class=err>如果主位置已被占用</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=o>!</span><span class=n>ttisnil</span><span class=p>(</span><span class=n>gval</span><span class=p>(</span><span class=n>mp</span><span class=p>))</span> <span class=o>||</span> <span class=n>mp</span> <span class=o>==</span> <span class=n>dummynode</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=ne>Node</span> <span class=o>*</span><span class=n>othern</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>        <span class=o>/*</span> <span class=err>获取空闲位置</span> <span class=p>(</span><span class=n>lastfree</span><span class=p>)</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>        <span class=ne>Node</span> <span class=o>*</span><span class=n>f</span> <span class=o>=</span> <span class=n>getfreepos</span><span class=p>(</span><span class=n>t</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=p>(</span><span class=n>f</span> <span class=o>==</span> <span class=n>NULL</span><span class=p>)</span> <span class=p>{</span> <span class=o>/*</span> <span class=err>没位置了？扩容</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=n>rehash</span><span class=p>(</span><span class=n>L</span><span class=p>,</span> <span class=n>t</span><span class=p>,</span> <span class=n>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>            <span class=k>return</span> <span class=n>luaH_set</span><span class=p>(</span><span class=n>L</span><span class=p>,</span> <span class=n>t</span><span class=p>,</span> <span class=n>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=o>/*</span> <span class=err>计算占位者</span><span class=p>(</span><span class=n>old_node</span><span class=p>)</span><span class=err>原本该在的主位置</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>        <span class=n>othern</span> <span class=o>=</span> <span class=n>mainposition</span><span class=p>(</span><span class=n>t</span><span class=p>,</span> <span class=n>keyfromval</span><span class=p>(</span><span class=n>mp</span><span class=p>));</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=p>(</span><span class=n>othern</span> <span class=o>!=</span> <span class=n>mp</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=o>/*</span> <span class=n>Case</span> <span class=n>A</span><span class=p>:</span> <span class=err>鸠占鹊巢</span> <span class=o>-&gt;</span> <span class=err>把</span> <span class=n>old_node</span> <span class=err>赶到</span> <span class=n>free</span> <span class=n>pos</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=k>while</span> <span class=p>(</span><span class=n>othern</span> <span class=o>+</span> <span class=n>gnext</span><span class=p>(</span><span class=n>othern</span><span class=p>)</span> <span class=o>!=</span> <span class=n>mp</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>                <span class=n>othern</span> <span class=o>+=</span> <span class=n>gnext</span><span class=p>(</span><span class=n>othern</span><span class=p>);</span> <span class=o>/*</span> <span class=err>找到指向</span> <span class=n>mp</span> <span class=err>的前驱</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            
+</span></span><span class=line><span class=cl>            <span class=n>gnext</span><span class=p>(</span><span class=n>othern</span><span class=p>)</span> <span class=o>=</span> <span class=n>cast_int</span><span class=p>(</span><span class=n>f</span> <span class=o>-</span> <span class=n>othern</span><span class=p>);</span> <span class=o>/*</span> <span class=err>修正链表指向新位置</span> <span class=n>f</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=o>*</span><span class=n>f</span> <span class=o>=</span> <span class=o>*</span><span class=n>mp</span><span class=p>;</span> <span class=o>/*</span> <span class=err>搬迁数据</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            
+</span></span><span class=line><span class=cl>            <span class=o>/*</span> <span class=err>腾出</span> <span class=n>mp</span> <span class=err>给新键，因为</span> <span class=n>mp</span> <span class=err>是新键的主位置</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=n>gnext</span><span class=p>(</span><span class=n>mp</span><span class=p>)</span> <span class=o>=</span> <span class=mi>0</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>            <span class=n>setnilvalue</span><span class=p>(</span><span class=n>gval</span><span class=p>(</span><span class=n>mp</span><span class=p>));</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>        <span class=k>else</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=o>/*</span> <span class=n>Case</span> <span class=n>B</span><span class=p>:</span> <span class=err>原住民冲突</span> <span class=o>-&gt;</span> <span class=err>新键只能去</span> <span class=n>free</span> <span class=n>pos</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=k>if</span> <span class=p>(</span><span class=n>gnext</span><span class=p>(</span><span class=n>mp</span><span class=p>)</span> <span class=o>!=</span> <span class=mi>0</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>                <span class=n>gnext</span><span class=p>(</span><span class=n>f</span><span class=p>)</span> <span class=o>=</span> <span class=n>cast_int</span><span class=p>((</span><span class=n>mp</span> <span class=o>+</span> <span class=n>gnext</span><span class=p>(</span><span class=n>mp</span><span class=p>))</span> <span class=o>-</span> <span class=n>f</span><span class=p>);</span> <span class=o>/*</span> <span class=err>头插法：链在</span> <span class=n>mp</span> <span class=err>后面</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=k>else</span> <span class=n>gnext</span><span class=p>(</span><span class=n>f</span><span class=p>)</span> <span class=o>=</span> <span class=mi>0</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>            
+</span></span><span class=line><span class=cl>            <span class=n>gnext</span><span class=p>(</span><span class=n>mp</span><span class=p>)</span> <span class=o>=</span> <span class=n>cast_int</span><span class=p>(</span><span class=n>f</span> <span class=o>-</span> <span class=n>mp</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>            <span class=n>mp</span> <span class=o>=</span> <span class=n>f</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>    
+</span></span><span class=line><span class=cl>    <span class=n>setnodekey</span><span class=p>(</span><span class=n>L</span><span class=p>,</span> <span class=o>&amp;</span><span class=n>mp</span><span class=o>-&gt;</span><span class=n>i_key</span><span class=p>,</span> <span class=n>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>gval</span><span class=p>(</span><span class=n>mp</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><ul><li><strong>情况 A：鸠占鹊巢</strong></li><li>如果 <code>old_node</code> 是被挤到这里的（即 <code>othern != mp</code>）。</li><li><strong>操作</strong>：Lua 把它挪到 <code>lastfree</code>，把 <code>main_pos</code> 抢回来给 <code>new_key</code>。</li><li><strong>目的</strong>：保证 <code>new_key</code> 这种“原住民”能直接找到位置，减少后续查找的开销。</li><li><strong>情况 B：原住民冲突</strong></li><li>如果 <code>old_node</code> 本来就该待在这里。</li><li><strong>操作</strong>：<code>new_key</code> 去 <code>lastfree</code>，并链接在 <code>old_node</code> 后面。</li></ul><p>这种机制被称为 <strong>Chained Scatter Table</strong>，它充分利用了数组空间，避免了由于大量微小对象分配导致的内存碎片。</p><h2 id=4-动态扩容rehash-的艺术>4. 动态扩容：Rehash 的艺术</h2><p>Table 的空间不是固定的。当空间不足或利用率失衡时，会触发 Rehash。</p><h3 id=41-触发时机>4.1 触发时机</h3><ul><li><strong>插入新键且空间已满</strong>：当我们赋值一个新键，而 Table 既没有数组空间，也没有哈希空位时。</li><li><strong>注意</strong>：将某个 Key 置为 <code>nil</code> <strong>不会</strong>立即触发 Rehash（为了防止频繁的内存抖动）。只有在空间不足需要重新评估时，才会回收 <code>nil</code> 占用的空间。</li></ul><h3 id=42-rehash-的三部曲>4.2 Rehash 的三部曲</h3><p>Rehash 是一个相对昂贵的操作，Lua 必须一次性重新计算数组和哈希两部分的最佳大小。</p><ol><li><strong>统计（Counting）</strong>： 遍历整个 Table（包括现有的 Array 和 Hash 部分），统计所有正整数键的数量，并按 $2^n$ 的区间（1-2, 3-4, 5-8&mldr;）进行分桶统计。同时统计非整数键的总数。</li><li><strong>定界（Sizing）</strong>： 计算数组部分的最佳大小 <code>sizearray</code>。</li></ol><ul><li>算法：找到最大的 $N$（$2$ 的幂），使得 $[1, N]$ 区间内的整数键数量 $\ge N/2$。</li><li>凡是小于等于 $N$ 的整数放入新数组，其余放入新哈希表。</li></ul><ol start=3><li><strong>搬迁（Relocation）</strong>：</li></ol><ul><li>申请新的 Array 和 Hash 内存块。</li><li>将数据搬运过去（重新计算哈希值）。</li><li>释放旧内存。</li></ul><p>这解释了为什么 Lua Table 既能像 C 数组一样紧凑高效，又能像 Python Dict 一样灵活。</p><h2 id=5-迭代器的秘密pairs-与-ipairs>5. 迭代器的秘密：pairs 与 ipairs</h2><p>我们在写 Lua 时常用的两种遍历方式，其底层性能差异巨大。</p><h3 id=51-ipairs序列专用>5.1 ipairs：序列专用</h3><p><code>ipairs</code> 是为**序列（Sequence）**量身定做的。</p><ul><li><strong>逻辑</strong>：维护一个内部计数器 <code>i</code>，从 1 开始递增。</li><li><strong>寻址</strong>：Lua 内部会先判断 <code>i</code> 是否在 <code>array</code> 的范围内。</li></ul><p><strong>源码佐证 (<code>luaH_getint</code>)</strong>： 这是整数查找的入口函数，清晰展示了“先查数组，再查哈希”的逻辑：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-gdscript3 data-lang=gdscript3><span class=line><span class=cl><span class=k>const</span> <span class=n>TValue</span> <span class=o>*</span><span class=n>luaH_getint</span> <span class=p>(</span><span class=n>Table</span> <span class=o>*</span><span class=n>t</span><span class=p>,</span> <span class=n>lua_Integer</span> <span class=n>key</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=o>/*</span> <span class=mf>1.</span> <span class=err>数组部分快速查找</span> <span class=p>(</span><span class=n>Fast</span> <span class=ne>Path</span><span class=p>)</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>    <span class=o>/*</span> <span class=err>这里的</span> <span class=n>alimit</span> <span class=err>就是数组的逻辑大小</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=n>l_castS2U</span><span class=p>(</span><span class=n>key</span><span class=p>)</span> <span class=o>-</span> <span class=mi>1</span> <span class=o>&lt;</span> <span class=n>t</span><span class=o>-&gt;</span><span class=n>alimit</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=o>&amp;</span><span class=n>t</span><span class=o>-&gt;</span><span class=n>array</span><span class=p>[</span><span class=n>key</span> <span class=o>-</span> <span class=mi>1</span><span class=p>];</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=o>/*</span> <span class=mf>2.</span> <span class=err>哈希部分查找</span> <span class=p>(</span><span class=n>Slow</span> <span class=ne>Path</span><span class=p>)</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>        <span class=ne>Node</span> <span class=o>*</span><span class=n>n</span> <span class=o>=</span> <span class=n>hashint</span><span class=p>(</span><span class=n>t</span><span class=p>,</span> <span class=n>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        <span class=k>for</span> <span class=p>(;;)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=k>if</span> <span class=p>(</span><span class=n>ttisinteger</span><span class=p>(</span><span class=n>gkey</span><span class=p>(</span><span class=n>n</span><span class=p>))</span> <span class=o>&amp;&amp;</span> <span class=n>ivalue</span><span class=p>(</span><span class=n>gkey</span><span class=p>(</span><span class=n>n</span><span class=p>))</span> <span class=o>==</span> <span class=n>key</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>                <span class=k>return</span> <span class=n>gval</span><span class=p>(</span><span class=n>n</span><span class=p>);</span> <span class=o>/*</span> <span class=err>找到了</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=k>else</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>                <span class=ne>int</span> <span class=n>nx</span> <span class=o>=</span> <span class=n>gnext</span><span class=p>(</span><span class=n>n</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>                <span class=k>if</span> <span class=p>(</span><span class=n>nx</span> <span class=o>==</span> <span class=mi>0</span><span class=p>)</span> <span class=k>break</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>                <span class=n>n</span> <span class=o>+=</span> <span class=n>nx</span><span class=p>;</span> <span class=o>/*</span> <span class=err>沿着冲突链查找</span> <span class=o>*/</span>
+</span></span><span class=line><span class=cl>            <span class=p>}</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>luaO_nilobject</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><ul><li><strong>在范围内</strong>：直接通过指针偏移 <code>array[i]</code> 读取，这几乎就是 C 语言访问数组的速度，<strong>极快</strong>。</li><li><strong>不在范围内</strong>：才去查 Hash 表。</li></ul><h3 id=52-pairs全量遍历>5.2 pairs：全量遍历</h3><p><code>pairs</code> 使用的是 <code>lua_next</code> 函数。</p><ul><li><strong>流程</strong>：</li></ul><ol><li><strong>先遍历数组部分</strong>：从下标 0 到 <code>sizearray</code> 线性扫描。</li><li><strong>再遍历哈希部分</strong>：从哈希桶的第一个位置扫描到最后一个位置。</li></ol><ul><li><strong>顺序问题</strong>：</li><li>对于<strong>纯数组</strong>表（如 <code>{10, 20, 30}</code>），因为只扫描数组部分，输出看起来是有序的。</li><li>一旦涉及哈希部分，顺序就是<strong>乱序</strong>的。这是因为 Key 在哈希表中的物理位置取决于 Hash 算法和冲突时的插入顺序，与逻辑顺序无关。</li></ul><p><strong>避坑指南</strong>：</p><blockquote><p>不要依赖 <code>pairs</code> 的遍历顺序，除非你确认表是纯数组且尚未发生过复杂的 Rehash。</p></blockquote><h2 id=6-总结>6. 总结</h2><p>Lua Table 的源码实现体现了极强的<strong>工程实用主义</strong>：</p><ol><li><strong>混合结构</strong>平衡了数组的 $O(1)$ 访问和哈希表的稀疏灵活性。</li><li><strong>50% 利用率原则</strong>保证了数组空间不会被过度浪费。</li><li><strong>lastfree 冲突解决</strong>最大化利用了预分配内存，减少了 <code>malloc</code> 调用的开销。</li></ol></section><footer class=article-footer><section class=article-tags><a href=/WBlog/tags/lua/>Lua</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>true</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/WBlog/p/lua-gc/><div class=article-details><h2 class=article-title>Lua GC</h2></div></a></article></div></div></aside><footer class=site-footer><section class=copyright>&copy;
+2020 -
+2026 白山羊</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=4.0.0>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><script type=module>
+    import gallery from '\/WBlog\/ts\/gallery.js';
+
+    const articleContent = document.querySelector('.article-content');
+    const shouldLoad = articleContent && (articleContent.querySelectorAll('figure').length > 0 || articleContent.querySelectorAll('img.gallery-image').length > 0);
+    
+    if (shouldLoad) {
+        gallery(articleContent);
+
+        const PhotoSwipeLightbox = (await import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe-lightbox.esm.min.js")).default;
+        const styleHref = "https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.css";
+
+        const styleTag = document.createElement('link');
+        styleTag.rel = 'stylesheet';
+        styleTag.href = styleHref;
+        document.head.appendChild(styleTag);
+
+        const lightbox = new PhotoSwipeLightbox({
+            gallerySelector: '.article-content',
+            childSelector: 'figure a.image-link',
+            pswpModule: () => import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.esm.min.js")
+        });
+        lightbox.init();
+    }
+</script></main></div><script type=text/javascript src=/WBlog/ts/main.acaf849f2b273f6a8368a58b001f336738d0c948d92e79b116467d0c7515f932.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
