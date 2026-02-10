@@ -6,7 +6,7 @@ favicon        = "img/avatar.jpg"
     since = 2020
 
 [sidebar]
-    subtitle = "To be continued..."
+    subtitle = "探索世界ing..."
     avatar   = "img/avatar.jpg"
 
 [article]
