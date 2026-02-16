@@ -1,2 +1,10 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>GC on 白山羊</title><link>https://WeissGoat.github.io/WBlog/tags/gc/</link><description>Recent content in GC on 白山羊</description><generator>Hugo</generator><language>en-us</language><lastBuildDate>Mon, 05 Feb 2024 18:00:00 +0800</lastBuildDate><atom:link href="https://WeissGoat.github.io/WBlog/tags/gc/index.xml" rel="self" type="application/rss+xml"/><item><title>Lua GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
-&lt;/h1&gt;&lt;p&gt;在上一篇文章中，我们探讨了 Lua 的数据结构（&lt;code&gt;TValue&lt;/code&gt;）以及哪些对象是值类型，哪些是引用类型。今天，我们继续向下挖掘，聊聊 Lua 虚拟机中的&lt;strong&gt;垃圾回收机制（Garbage Collection）&lt;/strong&gt;。&lt;/p&gt;</description></item></channel></rss>
+&lt;/h1&gt;&lt;h2 id="从-stop-the-world-到增量"&gt;从 Stop-the-World 到增量
+&lt;/h2&gt;&lt;h3 id="lua-50简单的代价"&gt;Lua 5.0：简单的代价
+&lt;/h3&gt;&lt;p&gt;在 Lua 5.0 时代，GC 算法非常朴素：&lt;strong&gt;双倍阈值，全量回收&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：当内存使用量达到上次 GC 后的两倍时，虚拟机暂停所有业务逻辑，跑一遍完整的“标记-清除”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：这就是著名的 &lt;strong&gt;Stop-the-World (STW)&lt;/strong&gt;。如果你的 Lua 内存占用了 1GB，GC 触发的那一瞬间，整个游戏或服务可能会卡顿几百毫秒甚至更久。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="lua-51三色增量标记tri-color-incremental-mark--sweep"&gt;Lua 5.1+：三色增量标记（Tri-color Incremental Mark &amp;amp; Sweep）
+&lt;/h3&gt;&lt;p&gt;为了解决卡顿，Lua 5.1 引入了增量 GC。GC 过程与业务代码交替运行。&lt;/p&gt;</description></item></channel></rss>
