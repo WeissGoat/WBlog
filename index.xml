@@ -424,240 +424,6 @@ Lua 的处理方式其实更接近于“把这个老年代对象暂时看作根�
 &lt;ul&gt;
 &lt;li&gt;在低内存时(比如500M)使用分代回收，享受他带来的性能提升&lt;/li&gt;
 &lt;li&gt;当内存使用较高时，切换到增量模式，通过周期性地执行小步骤的垃圾回收，避免一次性长时间的GC暂停&lt;/li&gt;
-&lt;/ul&gt;</description></item><item><title>Lua GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
-&lt;/h1&gt;&lt;h2 id="从-stop-the-world-到增量"&gt;从 Stop-the-World 到增量
-&lt;/h2&gt;&lt;h3 id="lua-50简单的代价"&gt;Lua 5.0：简单的代价
-&lt;/h3&gt;&lt;p&gt;在 Lua 5.0 时代，GC 算法非常朴素：&lt;strong&gt;双倍阈值，全量回收&lt;/strong&gt;。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：当内存使用量达到上次 GC 后的两倍时，虚拟机暂停所有业务逻辑，跑一遍完整的“标记-清除”。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：这就是著名的 &lt;strong&gt;Stop-the-World (STW)&lt;/strong&gt;。如果你的 Lua 内存占用了 1GB，GC 触发的那一瞬间，整个游戏或服务可能会卡顿几百毫秒甚至更久。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="lua-51三色增量标记tri-color-incremental-mark--sweep"&gt;Lua 5.1+：三色增量标记（Tri-color Incremental Mark &amp;amp; Sweep）
-&lt;/h3&gt;&lt;p&gt;为了解决卡顿，Lua 5.1 引入了增量 GC。GC 过程与业务代码交替运行。&lt;/p&gt;
-&lt;p&gt;为了实现“可中断、可恢复”的扫描，Lua 引入了&lt;strong&gt;三色标记法&lt;/strong&gt;。&lt;/p&gt;
-&lt;h2 id="核心算法三色标记与双白设计"&gt;核心算法：三色标记与双白设计
-&lt;/h2&gt;&lt;p&gt;GC 的本质是从根节点（_G、Registry、栈）出发，找到所有可达对象。在增量扫描过程中，对象被标记为三种颜色：&lt;/p&gt;
-&lt;h3 id="颜色的含义"&gt;颜色的含义
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;⚪ 白色 (White)&lt;/strong&gt;：&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：当前还未被 GC 访问到的对象，或者已死亡的对象。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;初始状态&lt;/strong&gt;：所有新创建的对象默认为白色。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;结局&lt;/strong&gt;：如果 GC 结束后还是白色，说明不可达，&lt;strong&gt;回收&lt;/strong&gt;。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;⚫ 黑色 (Black)&lt;/strong&gt;：&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;已扫描完毕&lt;/strong&gt;。该对象及其引用的所有子对象都已经被访问过了。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;特性&lt;/strong&gt;：GC 这一轮不会再回头看它。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;🔘 灰色 (Gray)&lt;/strong&gt;：&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;待处理&lt;/strong&gt;。该对象已被访问（从白色变成了灰色），但它引用的子对象还没扫描完。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;作用&lt;/strong&gt;：灰色是当前扫描的边缘（Frontier），保存在一个链表中。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="巧妙的双白设计-the-two-whites"&gt;巧妙的“双白”设计 (The Two Whites)
-&lt;/h3&gt;&lt;p&gt;我在研究源码时发现一个有趣的细节：Lua 的白色其实细分为 &lt;strong&gt;White1&lt;/strong&gt; 和 &lt;strong&gt;White2&lt;/strong&gt;。这是为了解决什么问题？&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;： GC 标记阶段已经快结束了（大部分是黑色），此时业务代码突然创建了一个新对象。&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;新对象默认是&lt;strong&gt;白色&lt;/strong&gt;。&lt;/li&gt;
-&lt;li&gt;如果不加区分，在接下来的“清除阶段”，GC 会认为这个白色的新对象是“没被引用的垃圾”并把它回收掉——&lt;strong&gt;这会导致严重 Bug&lt;/strong&gt;。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;&lt;strong&gt;解决方案&lt;/strong&gt;： Lua 使用一个全局的位掩码 &lt;code&gt;CurrentWhite&lt;/code&gt;。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;本轮 GC&lt;/strong&gt;：只回收标记为“旧白色”的对象。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;新创建对象&lt;/strong&gt;：标记为“新白色”（CurrentWhite）。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：新对象在本轮 GC 中被视为“安全”，留到下一轮再处理。在清除阶段结束后，Lua 会轮转 &lt;code&gt;CurrentWhite&lt;/code&gt; 的值。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="状态机的流转gc-的生命周期"&gt;状态机的流转：GC 的生命周期
-&lt;/h2&gt;&lt;p&gt;Lua 的增量 GC 是通过一个状态机驱动的。每次调用 &lt;code&gt;luaC_step&lt;/code&gt;，GC 就会向前推进一步。以下是主要的阶段：&lt;/p&gt;
-&lt;h3 id="-gcspause-暂停初始化"&gt;① GCSpause (暂停/初始化)
-&lt;/h3&gt;&lt;p&gt;GC 的起点。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;将根节点（主线程、全局表 _G、Registry 等）标记为&lt;strong&gt;灰色&lt;/strong&gt;，并加入灰色链表。&lt;/li&gt;
-&lt;li&gt;此时，通过根节点的一波操作，我们有了第一批待扫描的灰色对象。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="-gcspropagate-传播---最耗时的阶段"&gt;② GCSpropagate (传播 - 最耗时的阶段)
-&lt;/h3&gt;&lt;p&gt;这是“增量”体现最明显的地方。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：从灰色链表中弹出一个对象，将其标记为&lt;strong&gt;黑色&lt;/strong&gt;，然后遍历它引用的所有子对象：&lt;/li&gt;
-&lt;li&gt;如果是白色，将其染成&lt;strong&gt;灰色&lt;/strong&gt;并加入链表。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;控制&lt;/strong&gt;：这个过程不是一次性做完的，而是受 &lt;code&gt;gcstepmul&lt;/code&gt; 控制，每次只处理一部分就暂停，把 CPU 让给业务逻辑。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="-gcsatomic-原子阶段---必须一次做完"&gt;③ GCSatomic (原子阶段 - 必须一次做完)
-&lt;/h3&gt;&lt;p&gt;这是这一轮 GC 中唯一需要 Stop-the-World 的时刻，但通常很快。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;目的&lt;/strong&gt;：因为 Propagate 阶段是并发的，业务代码可能在此期间修改了引用（比如把一个白色对象赋值给了一个已经黑色的 Table）。如果不修正，那个白色对象会被误删。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：&lt;/li&gt;
-&lt;/ul&gt;
-&lt;ol&gt;
-&lt;li&gt;重新遍历“灰名单”（GrayAgain，由写屏障产生，详见下文）。&lt;/li&gt;
-&lt;li&gt;扫描弱引用表（Weak Tables）。&lt;/li&gt;
-&lt;li&gt;完成所有剩余的标记工作。&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h3 id="-gcssweepstring-字符串清理"&gt;④ GCSsweepstring (字符串清理)
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;特点&lt;/strong&gt;：Lua 的短字符串是单独管理的（通常存储在全局哈希表中）。因为字符串没有子引用，清理非常快，直接从哈希表中移除未标记的字符串。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="-gcssweep-普通对象清理"&gt;⑤ GCSsweep (普通对象清理)
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：遍历所有 GCObject 链表。&lt;/li&gt;
-&lt;li&gt;如果是&lt;strong&gt;黑色&lt;/strong&gt;：说明活着，重置为当前白色（为下一轮做准备）。&lt;/li&gt;
-&lt;li&gt;如果是&lt;strong&gt;旧白色&lt;/strong&gt;：说明死了，&lt;strong&gt;free&lt;/strong&gt; 掉内存。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="-gcsfinalize-终结"&gt;⑥ GCSfinalize (终结)
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;处理所有实现了 &lt;code&gt;__gc&lt;/code&gt; 元方法的 Userdata。这些对象不会立即释放，而是会被放入一个单独的列表，等待虚拟机调用它们的析构函数。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="并发下的黑指向白与写屏障"&gt;并发下的“黑指向白”与写屏障
-&lt;/h2&gt;&lt;p&gt;在 &lt;code&gt;GCSpropagate&lt;/code&gt; 阶段，GC 和业务逻辑是交替运行的。这就带来了一个严重的&lt;strong&gt;数据竞争&lt;/strong&gt;问题。&lt;/p&gt;
-&lt;p&gt;&lt;strong&gt;问题场景&lt;/strong&gt;：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;GC 标记了 Table A 为&lt;strong&gt;黑色&lt;/strong&gt;（认为 A 已经扫描完了）。&lt;/li&gt;
-&lt;li&gt;业务代码执行 &lt;code&gt;A.x = B&lt;/code&gt;，其中 B 是一个&lt;strong&gt;白色&lt;/strong&gt;对象。&lt;/li&gt;
-&lt;li&gt;因为 A 已经是黑色，GC 不会再扫描它。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：B 作为一个被引用的对象，却因为没被扫描到，保持白色。在清除阶段，B 会被当垃圾回收，导致 &lt;code&gt;A.x&lt;/code&gt; 变成了野指针！&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h3 id="解决方案写屏障-write-barrier"&gt;解决方案：写屏障 (Write Barrier)
-&lt;/h3&gt;&lt;p&gt;为了维护**“黑色对象不能指向白色对象”**这一不变量（Invariant），Lua 在每次修改引用（table set/assignment）时，会触发写屏障。&lt;/p&gt;
-&lt;p&gt;写屏障有两种主要形式：&lt;/p&gt;
-&lt;h4 id="1-前进屏障-forward-barrier---把白色染灰"&gt;1. 前进屏障 (Forward Barrier) - &amp;ldquo;把白色染灰&amp;rdquo;
-&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障会立即把 &lt;strong&gt;B 染成灰色&lt;/strong&gt;。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：既然 A 引用了 B，那 B 肯定是有用的，赶紧把 B 拉进待扫描清单。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于将新对象赋值给老对象时。用于 Closure (Upvalues)、Userdata 等。因为这些对象通常不像 Table 那样频繁修改引用。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h4 id="2-后退屏障-backward-barrier---把黑色回退变灰"&gt;2. 后退屏障 (Backward Barrier) - &amp;ldquo;把黑色回退变灰&amp;rdquo;
-&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障把 &lt;strong&gt;A 变回灰色&lt;/strong&gt;，扔进 &lt;code&gt;grayagain&lt;/code&gt; 列表。&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：A 你虽然扫过了，但你现在又有了新欢，GC 稍后得回头再查你一次。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于 &lt;code&gt;Table&lt;/code&gt; 等容器。这是因为 Table 容易频繁变动，如果用前进屏障（把子对象变灰），下次 Table 再变动时又要触发屏障；而把 Table 变灰后，它就留在 Gray 链表中，之后再往里面塞白色对象就不需要触发屏障了（因为父对象已经是灰的了）。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h3 id="源码窥探"&gt;源码窥探
-&lt;/h3&gt;&lt;p&gt;让我们看看 Lua 内部宏 &lt;code&gt;luaC_barrier&lt;/code&gt; 的简化逻辑：&lt;/p&gt;
-&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
-&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
-&lt;/span&gt;&lt;span class="lnt"&gt; 2
-&lt;/span&gt;&lt;span class="lnt"&gt; 3
-&lt;/span&gt;&lt;span class="lnt"&gt; 4
-&lt;/span&gt;&lt;span class="lnt"&gt; 5
-&lt;/span&gt;&lt;span class="lnt"&gt; 6
-&lt;/span&gt;&lt;span class="lnt"&gt; 7
-&lt;/span&gt;&lt;span class="lnt"&gt; 8
-&lt;/span&gt;&lt;span class="lnt"&gt; 9
-&lt;/span&gt;&lt;span class="lnt"&gt;10
-&lt;/span&gt;&lt;span class="lnt"&gt;11
-&lt;/span&gt;&lt;span class="lnt"&gt;12
-&lt;/span&gt;&lt;span class="lnt"&gt;13
-&lt;/span&gt;&lt;span class="lnt"&gt;14
-&lt;/span&gt;&lt;span class="lnt"&gt;15
-&lt;/span&gt;&lt;span class="lnt"&gt;16
-&lt;/span&gt;&lt;span class="lnt"&gt;17
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 伪代码逻辑：写屏障 */
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_barrier(L, p, v) { \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* p 是父对象(Table)，v 是子对象(Value) */ \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isblack(p) &amp;amp;&amp;amp; iswhite(v)) { \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 触发屏障：黑色指向了白色 */ \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_barrier_(L, obj2gco(p), obj2gco(v)); \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;void luaC_barrier_ (lua_State *L, GCObject *p, GCObject *v) {
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 保持黑白不变性 */
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isdead(L, v)) return; // 已经死的不管
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 策略：通常是将 v (子对象) 标灰 (Forward Barrier)
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 或者将 p (父对象) 放入 grayagain 列表 (Backward Barrier)
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; reallymarkobject(L, v);
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;&lt;p&gt;正是这个 &lt;code&gt;luaC_barrier&lt;/code&gt;，保证了增量 GC 的正确性。它就像一个监视器，拦截了所有的赋值操作。&lt;/p&gt;
-&lt;h2 id="gc触发的时机"&gt;GC触发的时机
-&lt;/h2&gt;&lt;p&gt;假设我们执行以下代码：&lt;/p&gt;
-&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
-&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;local i = 1234
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;&lt;p&gt;这行代码会触发 GC 吗？答案是&lt;strong&gt;不会&lt;/strong&gt;。&lt;/p&gt;
-&lt;p&gt;根据 Lua 的内存模型（如上文 &lt;code&gt;TValue&lt;/code&gt; 结构所示）：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;值类型（Value Types）&lt;/strong&gt;：如 &lt;code&gt;nil&lt;/code&gt;, &lt;code&gt;boolean&lt;/code&gt;, &lt;code&gt;number&lt;/code&gt; (integer/float)。这些数据直接存放在 Lua 栈的 &lt;code&gt;TValue&lt;/code&gt; 结构体中。它们随着栈帧的销毁而自动消失，&lt;strong&gt;不涉及堆内存分配&lt;/strong&gt;（malloc），因此不计入 GC 的债务（GCdebt），自然也不会触发 GC 步进。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;引用类型（Reference Types）&lt;/strong&gt;：如 &lt;code&gt;table&lt;/code&gt;, &lt;code&gt;function&lt;/code&gt;, &lt;code&gt;string&lt;/code&gt; (长字符串), &lt;code&gt;userdata&lt;/code&gt;。这些对象存活在堆上，才是 GC 主要“追杀”的目标。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;在 Lua 虚拟机源码中，几乎所有涉及内存分配的操作（如 &lt;code&gt;lua_newtable&lt;/code&gt;, &lt;code&gt;lua_pushstring&lt;/code&gt;）之后，都会调用一个检查宏：&lt;strong&gt;&lt;code&gt;luaC_checkGC&lt;/code&gt;&lt;/strong&gt;。&lt;/p&gt;
-&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
-&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
-&lt;/span&gt;&lt;span class="lnt"&gt;2
-&lt;/span&gt;&lt;span class="lnt"&gt;3
-&lt;/span&gt;&lt;span class="lnt"&gt;4
-&lt;/span&gt;&lt;span class="lnt"&gt;5
-&lt;/span&gt;&lt;span class="lnt"&gt;6
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_checkGC(L) { \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (G(L)-&amp;gt;GCdebt &amp;gt; 0) { \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_step(L); \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; condchangemem(L,pre,pos); \
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;&lt;code&gt;GCdebt&lt;/code&gt; (GC 债务)&lt;/strong&gt;：这是一个核心概念。每当你分配 1 字节内存，&lt;code&gt;GCdebt&lt;/code&gt; 就会增加 1。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;判断逻辑&lt;/strong&gt;：只要“债务”大于 0，Lua 就会认为“如果你制造了垃圾（或者申请了新内存），你就得负责清理一点垃圾”。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;&lt;code&gt;luaC_step&lt;/code&gt;&lt;/strong&gt;：这就是执行一次 GC“步进”的函数。它不会跑完整个 GC 流程，而是只跑一小步（具体跑多远，由 &lt;code&gt;stepmul&lt;/code&gt; 决定）。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="控制-gc-的速率"&gt;控制 GC 的速率
-&lt;/h2&gt;&lt;p&gt;了解了原理，我们就能看懂 &lt;code&gt;collectgarbage&lt;/code&gt; 的两个参数了：&lt;/p&gt;
-&lt;h3 id="pause-暂停系数"&gt;&lt;code&gt;pause&lt;/code&gt; (暂停系数)
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：GC的间歇率, 将 GCdebt 设置为一个巨大的负数来实现的, 默认值200（即 200%）。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：如果当前内存是 10MB，GC 结束后回收到 5MB。那么下一次 GC 启动的阈值是 &lt;code&gt;5MB * 200% = 10MB&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;值越小，GC 越勤快，内存占用越低，但 CPU 消耗越高。&lt;/li&gt;
-&lt;/ul&gt;
-&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
-&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
-&lt;/span&gt;&lt;span class="lnt"&gt; 2
-&lt;/span&gt;&lt;span class="lnt"&gt; 3
-&lt;/span&gt;&lt;span class="lnt"&gt; 4
-&lt;/span&gt;&lt;span class="lnt"&gt; 5
-&lt;/span&gt;&lt;span class="lnt"&gt; 6
-&lt;/span&gt;&lt;span class="lnt"&gt; 7
-&lt;/span&gt;&lt;span class="lnt"&gt; 8
-&lt;/span&gt;&lt;span class="lnt"&gt; 9
-&lt;/span&gt;&lt;span class="lnt"&gt;10
-&lt;/span&gt;&lt;span class="lnt"&gt;11
-&lt;/span&gt;&lt;span class="lnt"&gt;12
-&lt;/span&gt;&lt;span class="lnt"&gt;13
-&lt;/span&gt;&lt;span class="lnt"&gt;14
-&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
-&lt;td class="lntd"&gt;
-&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;static void setpause (global_State *g) {
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem threshold, debt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem estimate = g-&amp;gt;GCestimate / 100; // 获取估算内存
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem pause = (g-&amp;gt;gcpause != 0) ? g-&amp;gt;gcpause : 200; // 默认 200
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 计算我们要等待多少内存分配 */
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; threshold = (pause * estimate);
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 设置债务 = 估算值 - 阈值
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; 因为 阈值 通常 &amp;gt; 估算值，所以这里 debt 是负数
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; */
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; debt = gettotalbytes(g) - threshold;
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaE_setdebt(g, debt);
-&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
-&lt;/div&gt;
-&lt;/div&gt;&lt;h3 id="stepmul-步进倍率"&gt;&lt;code&gt;stepmul&lt;/code&gt; (步进倍率)
-&lt;/h3&gt;&lt;ul&gt;
-&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：控制 GC 扫描的速度。默认值 200(200%)。&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：分配了 1 字节内存（增加了 1 字节债务）,GC 需要执行等同于 2 字节内存的工作量，才能把这 1 字节的债务“抵消”掉。&lt;/li&gt;
-&lt;li&gt;如果你发现内存飙升得比 GC 回收得快（Alloc &amp;gt; Free），说明 GC 跑慢了，需要&lt;strong&gt;调大&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt;。&lt;/li&gt;
-&lt;li&gt;如果你发现游戏明显卡顿，可能是 GC 一次步进占用 CPU 太多，尝试&lt;strong&gt;调小&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt; 让切片更细。&lt;/li&gt;
 &lt;/ul&gt;</description></item><item><title>Lua Table</title><link>https://WeissGoat.github.io/WBlog/p/lua-table/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-table/</guid><description>&lt;h2 id="核心数据结构"&gt;核心数据结构
 &lt;/h2&gt;&lt;p&gt;Lua Table 的高效由其底层的 &lt;code&gt;struct Table&lt;/code&gt; 决定。从源码中我们可以清晰地看到，它并非单纯的哈希表，而是&lt;strong&gt;数组&lt;/strong&gt;与&lt;strong&gt;哈希表&lt;/strong&gt;的结合体。&lt;/p&gt;
 &lt;h3 id="table-结构体定义"&gt;Table 结构体定义
@@ -1013,6 +779,240 @@ Lua 的处理方式其实更接近于“把这个老年代对象暂时看作根�
 &lt;/ul&gt;
 &lt;blockquote&gt;
 &lt;p&gt;不要依赖 &lt;code&gt;pairs&lt;/code&gt; 的遍历顺序，除非你确认表是纯数组且尚未发生过复杂的 Rehash。&lt;/p&gt;
-&lt;/blockquote&gt;</description></item><item><title>hello world</title><link>https://WeissGoat.github.io/WBlog/p/hello-world/</link><pubDate>Mon, 29 Jan 2024 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/p/hello-world/</guid><description>&lt;p&gt;很幸运生活在一个技术爆炸的时代, 感觉未来充满着可能性&lt;/p&gt;
+&lt;/blockquote&gt;</description></item><item><title>Lua 增量 GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-%E5%A2%9E%E9%87%8F-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-%E5%A2%9E%E9%87%8F-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
+&lt;/h1&gt;&lt;h2 id="从-stop-the-world-到增量"&gt;从 Stop-the-World 到增量
+&lt;/h2&gt;&lt;h3 id="lua-50简单的代价"&gt;Lua 5.0：简单的代价
+&lt;/h3&gt;&lt;p&gt;在 Lua 5.0 时代，GC 算法非常朴素：&lt;strong&gt;双倍阈值，全量回收&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：当内存使用量达到上次 GC 后的两倍时，虚拟机暂停所有业务逻辑，跑一遍完整的“标记-清除”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：这就是著名的 &lt;strong&gt;Stop-the-World (STW)&lt;/strong&gt;。如果你的 Lua 内存占用了 1GB，GC 触发的那一瞬间，整个游戏或服务可能会卡顿几百毫秒甚至更久。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="lua-51三色增量标记tri-color-incremental-mark--sweep"&gt;Lua 5.1+：三色增量标记（Tri-color Incremental Mark &amp;amp; Sweep）
+&lt;/h3&gt;&lt;p&gt;为了解决卡顿，Lua 5.1 引入了增量 GC。GC 过程与业务代码交替运行。&lt;/p&gt;
+&lt;p&gt;为了实现“可中断、可恢复”的扫描，Lua 引入了&lt;strong&gt;三色标记法&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id="核心算法三色标记与双白设计"&gt;核心算法：三色标记与双白设计
+&lt;/h2&gt;&lt;p&gt;GC 的本质是从根节点（_G、Registry、栈）出发，找到所有可达对象。在增量扫描过程中，对象被标记为三种颜色：&lt;/p&gt;
+&lt;h3 id="颜色的含义"&gt;颜色的含义
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;⚪ 白色 (White)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：当前还未被 GC 访问到的对象，或者已死亡的对象。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;初始状态&lt;/strong&gt;：所有新创建的对象默认为白色。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结局&lt;/strong&gt;：如果 GC 结束后还是白色，说明不可达，&lt;strong&gt;回收&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;⚫ 黑色 (Black)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;已扫描完毕&lt;/strong&gt;。该对象及其引用的所有子对象都已经被访问过了。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;特性&lt;/strong&gt;：GC 这一轮不会再回头看它。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;🔘 灰色 (Gray)&lt;/strong&gt;：&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：&lt;strong&gt;待处理&lt;/strong&gt;。该对象已被访问（从白色变成了灰色），但它引用的子对象还没扫描完。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;作用&lt;/strong&gt;：灰色是当前扫描的边缘（Frontier），保存在一个链表中。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="巧妙的双白设计-the-two-whites"&gt;巧妙的“双白”设计 (The Two Whites)
+&lt;/h3&gt;&lt;p&gt;我在研究源码时发现一个有趣的细节：Lua 的白色其实细分为 &lt;strong&gt;White1&lt;/strong&gt; 和 &lt;strong&gt;White2&lt;/strong&gt;。这是为了解决什么问题？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;场景&lt;/strong&gt;： GC 标记阶段已经快结束了（大部分是黑色），此时业务代码突然创建了一个新对象。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;新对象默认是&lt;strong&gt;白色&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;如果不加区分，在接下来的“清除阶段”，GC 会认为这个白色的新对象是“没被引用的垃圾”并把它回收掉——&lt;strong&gt;这会导致严重 Bug&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;解决方案&lt;/strong&gt;： Lua 使用一个全局的位掩码 &lt;code&gt;CurrentWhite&lt;/code&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;本轮 GC&lt;/strong&gt;：只回收标记为“旧白色”的对象。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;新创建对象&lt;/strong&gt;：标记为“新白色”（CurrentWhite）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：新对象在本轮 GC 中被视为“安全”，留到下一轮再处理。在清除阶段结束后，Lua 会轮转 &lt;code&gt;CurrentWhite&lt;/code&gt; 的值。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="状态机的流转gc-的生命周期"&gt;状态机的流转：GC 的生命周期
+&lt;/h2&gt;&lt;p&gt;Lua 的增量 GC 是通过一个状态机驱动的。每次调用 &lt;code&gt;luaC_step&lt;/code&gt;，GC 就会向前推进一步。以下是主要的阶段：&lt;/p&gt;
+&lt;h3 id="-gcspause-暂停初始化"&gt;① GCSpause (暂停/初始化)
+&lt;/h3&gt;&lt;p&gt;GC 的起点。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;将根节点（主线程、全局表 _G、Registry 等）标记为&lt;strong&gt;灰色&lt;/strong&gt;，并加入灰色链表。&lt;/li&gt;
+&lt;li&gt;此时，通过根节点的一波操作，我们有了第一批待扫描的灰色对象。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcspropagate-传播---最耗时的阶段"&gt;② GCSpropagate (传播 - 最耗时的阶段)
+&lt;/h3&gt;&lt;p&gt;这是“增量”体现最明显的地方。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：从灰色链表中弹出一个对象，将其标记为&lt;strong&gt;黑色&lt;/strong&gt;，然后遍历它引用的所有子对象：&lt;/li&gt;
+&lt;li&gt;如果是白色，将其染成&lt;strong&gt;灰色&lt;/strong&gt;并加入链表。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;控制&lt;/strong&gt;：这个过程不是一次性做完的，而是受 &lt;code&gt;gcstepmul&lt;/code&gt; 控制，每次只处理一部分就暂停，把 CPU 让给业务逻辑。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcsatomic-原子阶段---必须一次做完"&gt;③ GCSatomic (原子阶段 - 必须一次做完)
+&lt;/h3&gt;&lt;p&gt;这是这一轮 GC 中唯一需要 Stop-the-World 的时刻，但通常很快。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;目的&lt;/strong&gt;：因为 Propagate 阶段是并发的，业务代码可能在此期间修改了引用（比如把一个白色对象赋值给了一个已经黑色的 Table）。如果不修正，那个白色对象会被误删。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol&gt;
+&lt;li&gt;重新遍历“灰名单”（GrayAgain，由写屏障产生，详见下文）。&lt;/li&gt;
+&lt;li&gt;扫描弱引用表（Weak Tables）。&lt;/li&gt;
+&lt;li&gt;完成所有剩余的标记工作。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="-gcssweepstring-字符串清理"&gt;④ GCSsweepstring (字符串清理)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;特点&lt;/strong&gt;：Lua 的短字符串是单独管理的（通常存储在全局哈希表中）。因为字符串没有子引用，清理非常快，直接从哈希表中移除未标记的字符串。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcssweep-普通对象清理"&gt;⑤ GCSsweep (普通对象清理)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;操作&lt;/strong&gt;：遍历所有 GCObject 链表。&lt;/li&gt;
+&lt;li&gt;如果是&lt;strong&gt;黑色&lt;/strong&gt;：说明活着，重置为当前白色（为下一轮做准备）。&lt;/li&gt;
+&lt;li&gt;如果是&lt;strong&gt;旧白色&lt;/strong&gt;：说明死了，&lt;strong&gt;free&lt;/strong&gt; 掉内存。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-gcsfinalize-终结"&gt;⑥ GCSfinalize (终结)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;处理所有实现了 &lt;code&gt;__gc&lt;/code&gt; 元方法的 Userdata。这些对象不会立即释放，而是会被放入一个单独的列表，等待虚拟机调用它们的析构函数。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="并发下的黑指向白与写屏障"&gt;并发下的“黑指向白”与写屏障
+&lt;/h2&gt;&lt;p&gt;在 &lt;code&gt;GCSpropagate&lt;/code&gt; 阶段，GC 和业务逻辑是交替运行的。这就带来了一个严重的&lt;strong&gt;数据竞争&lt;/strong&gt;问题。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;问题场景&lt;/strong&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;GC 标记了 Table A 为&lt;strong&gt;黑色&lt;/strong&gt;（认为 A 已经扫描完了）。&lt;/li&gt;
+&lt;li&gt;业务代码执行 &lt;code&gt;A.x = B&lt;/code&gt;，其中 B 是一个&lt;strong&gt;白色&lt;/strong&gt;对象。&lt;/li&gt;
+&lt;li&gt;因为 A 已经是黑色，GC 不会再扫描它。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;后果&lt;/strong&gt;：B 作为一个被引用的对象，却因为没被扫描到，保持白色。在清除阶段，B 会被当垃圾回收，导致 &lt;code&gt;A.x&lt;/code&gt; 变成了野指针！&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="解决方案写屏障-write-barrier"&gt;解决方案：写屏障 (Write Barrier)
+&lt;/h3&gt;&lt;p&gt;为了维护**“黑色对象不能指向白色对象”**这一不变量（Invariant），Lua 在每次修改引用（table set/assignment）时，会触发写屏障。&lt;/p&gt;
+&lt;p&gt;写屏障有两种主要形式：&lt;/p&gt;
+&lt;h4 id="1-前进屏障-forward-barrier---把白色染灰"&gt;1. 前进屏障 (Forward Barrier) - &amp;ldquo;把白色染灰&amp;rdquo;
+&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障会立即把 &lt;strong&gt;B 染成灰色&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：既然 A 引用了 B，那 B 肯定是有用的，赶紧把 B 拉进待扫描清单。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于将新对象赋值给老对象时。用于 Closure (Upvalues)、Userdata 等。因为这些对象通常不像 Table 那样频繁修改引用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id="2-后退屏障-backward-barrier---把黑色回退变灰"&gt;2. 后退屏障 (Backward Barrier) - &amp;ldquo;把黑色回退变灰&amp;rdquo;
+&lt;/h4&gt;&lt;p&gt;如果你把白色对象 B 赋给黑色对象 A，屏障把 &lt;strong&gt;A 变回灰色&lt;/strong&gt;，扔进 &lt;code&gt;grayagain&lt;/code&gt; 列表。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;意义&lt;/strong&gt;：A 你虽然扫过了，但你现在又有了新欢，GC 稍后得回头再查你一次。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;应用&lt;/strong&gt;：通常用于 &lt;code&gt;Table&lt;/code&gt; 等容器。这是因为 Table 容易频繁变动，如果用前进屏障（把子对象变灰），下次 Table 再变动时又要触发屏障；而把 Table 变灰后，它就留在 Gray 链表中，之后再往里面塞白色对象就不需要触发屏障了（因为父对象已经是灰的了）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="源码窥探"&gt;源码窥探
+&lt;/h3&gt;&lt;p&gt;让我们看看 Lua 内部宏 &lt;code&gt;luaC_barrier&lt;/code&gt; 的简化逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;/* 伪代码逻辑：写屏障 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_barrier(L, p, v) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* p 是父对象(Table)，v 是子对象(Value) */ \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isblack(p) &amp;amp;&amp;amp; iswhite(v)) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 触发屏障：黑色指向了白色 */ \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_barrier_(L, obj2gco(p), obj2gco(v)); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;void luaC_barrier_ (lua_State *L, GCObject *p, GCObject *v) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 保持黑白不变性 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (isdead(L, v)) return; // 已经死的不管
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 策略：通常是将 v (子对象) 标灰 (Forward Barrier)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; // 或者将 p (父对象) 放入 grayagain 列表 (Backward Barrier)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; reallymarkobject(L, v);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;正是这个 &lt;code&gt;luaC_barrier&lt;/code&gt;，保证了增量 GC 的正确性。它就像一个监视器，拦截了所有的赋值操作。&lt;/p&gt;
+&lt;h2 id="gc触发的时机"&gt;GC触发的时机
+&lt;/h2&gt;&lt;p&gt;假设我们执行以下代码：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;local i = 1234
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这行代码会触发 GC 吗？答案是&lt;strong&gt;不会&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;根据 Lua 的内存模型（如上文 &lt;code&gt;TValue&lt;/code&gt; 结构所示）：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;值类型（Value Types）&lt;/strong&gt;：如 &lt;code&gt;nil&lt;/code&gt;, &lt;code&gt;boolean&lt;/code&gt;, &lt;code&gt;number&lt;/code&gt; (integer/float)。这些数据直接存放在 Lua 栈的 &lt;code&gt;TValue&lt;/code&gt; 结构体中。它们随着栈帧的销毁而自动消失，&lt;strong&gt;不涉及堆内存分配&lt;/strong&gt;（malloc），因此不计入 GC 的债务（GCdebt），自然也不会触发 GC 步进。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;引用类型（Reference Types）&lt;/strong&gt;：如 &lt;code&gt;table&lt;/code&gt;, &lt;code&gt;function&lt;/code&gt;, &lt;code&gt;string&lt;/code&gt; (长字符串), &lt;code&gt;userdata&lt;/code&gt;。这些对象存活在堆上，才是 GC 主要“追杀”的目标。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在 Lua 虚拟机源码中，几乎所有涉及内存分配的操作（如 &lt;code&gt;lua_newtable&lt;/code&gt;, &lt;code&gt;lua_pushstring&lt;/code&gt;）之后，都会调用一个检查宏：&lt;strong&gt;&lt;code&gt;luaC_checkGC&lt;/code&gt;&lt;/strong&gt;。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;#define luaC_checkGC(L) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; if (G(L)-&amp;gt;GCdebt &amp;gt; 0) { \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaC_step(L); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; } \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; condchangemem(L,pre,pos); \
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;GCdebt&lt;/code&gt; (GC 债务)&lt;/strong&gt;：这是一个核心概念。每当你分配 1 字节内存，&lt;code&gt;GCdebt&lt;/code&gt; 就会增加 1。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;判断逻辑&lt;/strong&gt;：只要“债务”大于 0，Lua 就会认为“如果你制造了垃圾（或者申请了新内存），你就得负责清理一点垃圾”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;luaC_step&lt;/code&gt;&lt;/strong&gt;：这就是执行一次 GC“步进”的函数。它不会跑完整个 GC 流程，而是只跑一小步（具体跑多远，由 &lt;code&gt;stepmul&lt;/code&gt; 决定）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="控制-gc-的速率"&gt;控制 GC 的速率
+&lt;/h2&gt;&lt;p&gt;了解了原理，我们就能看懂 &lt;code&gt;collectgarbage&lt;/code&gt; 的两个参数了：&lt;/p&gt;
+&lt;h3 id="pause-暂停系数"&gt;&lt;code&gt;pause&lt;/code&gt; (暂停系数)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：GC的间歇率, 将 GCdebt 设置为一个巨大的负数来实现的, 默认值200（即 200%）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：如果当前内存是 10MB，GC 结束后回收到 5MB。那么下一次 GC 启动的阈值是 &lt;code&gt;5MB * 200% = 10MB&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;值越小，GC 越勤快，内存占用越低，但 CPU 消耗越高。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;static void setpause (global_State *g) {
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem threshold, debt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem estimate = g-&amp;gt;GCestimate / 100; // 获取估算内存
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; l_mem pause = (g-&amp;gt;gcpause != 0) ? g-&amp;gt;gcpause : 200; // 默认 200
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 计算我们要等待多少内存分配 */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; threshold = (pause * estimate);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; /* 设置债务 = 估算值 - 阈值
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; 因为 阈值 通常 &amp;gt; 估算值，所以这里 debt 是负数
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; */
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; debt = gettotalbytes(g) - threshold;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; luaE_setdebt(g, debt);
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;}
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="stepmul-步进倍率"&gt;&lt;code&gt;stepmul&lt;/code&gt; (步进倍率)
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;含义&lt;/strong&gt;：控制 GC 扫描的速度。默认值 200(200%)。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;逻辑&lt;/strong&gt;：分配了 1 字节内存（增加了 1 字节债务）,GC 需要执行等同于 2 字节内存的工作量，才能把这 1 字节的债务“抵消”掉。&lt;/li&gt;
+&lt;li&gt;如果你发现内存飙升得比 GC 回收得快（Alloc &amp;gt; Free），说明 GC 跑慢了，需要&lt;strong&gt;调大&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;如果你发现游戏明显卡顿，可能是 GC 一次步进占用 CPU 太多，尝试&lt;strong&gt;调小&lt;/strong&gt; &lt;code&gt;stepmul&lt;/code&gt; 让切片更细。&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>hello world</title><link>https://WeissGoat.github.io/WBlog/p/hello-world/</link><pubDate>Mon, 29 Jan 2024 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/p/hello-world/</guid><description>&lt;p&gt;很幸运生活在一个技术爆炸的时代, 感觉未来充满着可能性&lt;/p&gt;
 &lt;p&gt;在这里展示我的生活, 我的思考, 我的成长&lt;/p&gt;</description></item><item><title>关于</title><link>https://WeissGoat.github.io/WBlog/%E5%85%B3%E4%BA%8E/</link><pubDate>Tue, 26 Jan 2021 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/%E5%85%B3%E4%BA%8E/</guid><description>&lt;p&gt;很幸运生活在一个技术爆炸的时代, 感觉未来充满着可能性&lt;/p&gt;
 &lt;p&gt;在这里展示我的生活, 我的思考, 我的成长&lt;/p&gt;</description></item><item><title>归档</title><link>https://WeissGoat.github.io/WBlog/archives/</link><pubDate>Tue, 28 May 2019 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/archives/</guid><description/></item><item><title>搜索</title><link>https://WeissGoat.github.io/WBlog/search/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://WeissGoat.github.io/WBlog/search/</guid><description/></item></channel></rss>
