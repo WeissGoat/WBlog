@@ -1,5 +1,5 @@
 ---
-title: "Lua GC"
+title: "Lua 增量 GC"
 date: 2024-02-05T18:00:00+08:00
 math: true
 license: true
