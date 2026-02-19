@@ -1,0 +1,213 @@
+<!doctype html><html lang=en-us dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="Lua 5.4 引入的分代垃圾回收（Generational GC）,相比于 Lua 5.3 的增量式 GC 专注于“降低停顿时间（Latency）”，Lua 5.4 的分代 GC 旨在解决“高吞吐量（Throughput）”场景下的性能瓶颈。特别是对于那些每一帧都产生大量临时对象（Short-lived objects）的游戏或高并发服务，分代 GC 能带来巨大的性能提升。\n"><title>Lua 分代 GC</title><link rel=canonical href=https://WeissGoat.github.io/WBlog/p/lua-%E5%88%86%E4%BB%A3-gc/><link rel=stylesheet href=/WBlog/scss/style.min.51098b80cc297c94c0f57786d4a04e7372774e5993b60facf53870128a79bf73.css><meta property='og:title' content="Lua 分代 GC"><meta property='og:description' content="Lua 5.4 引入的分代垃圾回收（Generational GC）,相比于 Lua 5.3 的增量式 GC 专注于“降低停顿时间（Latency）”，Lua 5.4 的分代 GC 旨在解决“高吞吐量（Throughput）”场景下的性能瓶颈。特别是对于那些每一帧都产生大量临时对象（Short-lived objects）的游戏或高并发服务，分代 GC 能带来巨大的性能提升。\n"><meta property='og:url' content='https://WeissGoat.github.io/WBlog/p/lua-%E5%88%86%E4%BB%A3-gc/'><meta property='og:site_name' content='白山羊'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='lua'><meta property='article:tag' content='GC'><meta property='article:published_time' content='2026-02-08T18:32:29+08:00'><meta property='article:modified_time' content='2026-02-08T18:32:29+08:00'><meta name=twitter:title content="Lua 分代 GC"><meta name=twitter:description content="Lua 5.4 引入的分代垃圾回收（Generational GC）,相比于 Lua 5.3 的增量式 GC 专注于“降低停顿时间（Latency）”，Lua 5.4 的分代 GC 旨在解决“高吞吐量（Throughput）”场景下的性能瓶颈。特别是对于那些每一帧都产生大量临时对象（Short-lived objects）的游戏或高并发服务，分代 GC 能带来巨大的性能提升。\n"><link rel="shortcut icon" href=https://WeissGoat.github.io/WBlog/img/avatar.jpg></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/WBlog/><img src=https://WeissGoat.github.io/WBlog/img/avatar.jpg width height class=site-logo loading=lazy alt=Avatar></a></figure><div class=site-meta><h1 class=site-name><a href=/WBlog/>白山羊</a></h1><h2 class=site-description>探索世界ing...</h2></div></header><ol class=menu-social><li><a href=https://github.com/whitessheep target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/WBlog/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/WBlog/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/WBlog/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/WBlog/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav class=toc-nav id=TableOfContents><ol><li><a href=#分代假设>分代假设</a></li><li><a href=#对象状态的深度解析>对象状态的深度解析</a><ol><li><a href=#状态全景图>状态全景图</a></li><li><a href=#状态流转图>状态流转图</a></li></ol></li><li><a href=#关键机制向前写屏障-forward-write-barrier>关键机制：向前写屏障 (Forward Write Barrier)</a><ol><li><a href=#屏障触发逻辑>屏障触发逻辑</a></li><li><a href=#为什么叫向前>为什么叫“向前”？</a></li></ol></li><li><a href=#次级回收-minor-collection-的详细流程>次级回收 (Minor Collection) 的详细流程</a><ol><li><a href=#触发时机>触发时机</a></li><li><a href=#步骤详解>步骤详解</a></li></ol></li><li><a href=#逆序链表与哨兵>逆序链表与哨兵</a><ol><li><a href=#数据结构时间逆序链表>数据结构：时间逆序链表</a></li><li><a href=#截断式清扫-sweep>截断式清扫 (Sweep)</a></li><li><a href=#链表剪接与状态更新>链表剪接与状态更新</a></li></ol></li><li><a href=#什么时候会崩回退到-major-gc>什么时候会“崩”？(回退到 Major GC)</a><ol><li><a href=#触发-major-gc-的条件>触发 Major GC 的条件</a></li><li><a href=#bad-touch-代码示例>&ldquo;Bad Touch&rdquo; 代码示例</a></li></ol></li><li><a href=#实际应用中的问题>实际应用中的问题</a></li><li><a href=#优化策略>优化策略</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/WBlog/categories/lua/ style=background-color:#efbeca;color:#3d0f1b>Lua</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/WBlog/p/lua-%E5%88%86%E4%BB%A3-gc/>Lua 分代 GC</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-02-08T18:32:29+08:00>2026年2月8日星期日</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 9 分钟</time></div></footer></div></header><aside class=article-toc><details><summary><div class=article-toc-title><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-right"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 6l6 6-6 6"/></svg>
+<span>目录</span></div></summary><nav class=toc-nav><ol><li><a href=#分代假设>分代假设</a></li><li><a href=#对象状态的深度解析>对象状态的深度解析</a><ol><li><a href=#状态全景图>状态全景图</a></li><li><a href=#状态流转图>状态流转图</a></li></ol></li><li><a href=#关键机制向前写屏障-forward-write-barrier>关键机制：向前写屏障 (Forward Write Barrier)</a><ol><li><a href=#屏障触发逻辑>屏障触发逻辑</a></li><li><a href=#为什么叫向前>为什么叫“向前”？</a></li></ol></li><li><a href=#次级回收-minor-collection-的详细流程>次级回收 (Minor Collection) 的详细流程</a><ol><li><a href=#触发时机>触发时机</a></li><li><a href=#步骤详解>步骤详解</a></li></ol></li><li><a href=#逆序链表与哨兵>逆序链表与哨兵</a><ol><li><a href=#数据结构时间逆序链表>数据结构：时间逆序链表</a></li><li><a href=#截断式清扫-sweep>截断式清扫 (Sweep)</a></li><li><a href=#链表剪接与状态更新>链表剪接与状态更新</a></li></ol></li><li><a href=#什么时候会崩回退到-major-gc>什么时候会“崩”？(回退到 Major GC)</a><ol><li><a href=#触发-major-gc-的条件>触发 Major GC 的条件</a></li><li><a href=#bad-touch-代码示例>&ldquo;Bad Touch&rdquo; 代码示例</a></li></ol></li><li><a href=#实际应用中的问题>实际应用中的问题</a></li><li><a href=#优化策略>优化策略</a></li></ol></nav></details></aside><section class=article-content><p>Lua 5.4 引入的<strong>分代垃圾回收（Generational GC）</strong>,相比于 Lua 5.3 的增量式 GC 专注于“降低停顿时间（Latency）”，Lua 5.4 的分代 GC 旨在解决“高吞吐量（Throughput）”场景下的性能瓶颈。特别是对于那些每一帧都产生大量临时对象（Short-lived objects）的游戏或高并发服务，分代 GC 能带来巨大的性能提升。</p><h2 id=分代假设>分代假设</h2><p><strong>分代假设（Generational Hypothesis）</strong> 认为：<strong>“绝大多数对象在创建后很快就会死亡。”</strong></p><p>在 Lua 5.3 的增量 GC 中，哪怕我们把 GC 拆分成了很多小步，但为了完成一轮完整的 GC 周期，收集器最终还是需要遍历整个堆（或者至少是大部分活跃对象）。如果堆中有几百万个长期存活的对象（比如加载的配置表、全局注册表），每次 GC 都要去确认它们“还在不在”，这本身就是一种巨大的算力浪费。</p><p>Lua 5.4 的分代模式试图达成以下目标：</p><ol><li><p><strong>忽略老年代</strong>：默认老年代对象是“不死”的，除非有证据表明它们引用了新对象。</p></li><li><p><strong>聚焦年轻代</strong>：集中火力快速扫描和清理新创建的对象。</p></li><li><p><strong>零拷贝（Non-Moving）</strong>：作为嵌入式语言，Lua 需要保持 C API 的指针稳定性，因此不能像 Java 或 Go 那样通过物理移动内存来整理堆。</p></li></ol><p>这种设计使得 Lua 5.4 在处理短命对象（如临时字符串、闭包、表）密集的场景下，性能比 5.3 提升显著，同时保持了极低的延迟。</p><h2 id=对象状态的深度解析>对象状态的深度解析</h2><p>在分代模式下，Lua 利用 <code>GCObject</code> 头部的标记位（Mark bits）构建了一个精细的状态机。为了更平滑地管理晋升，Lua 5.4 实际上将老年代细分为了两个阶段。</p><h3 id=状态全景图>状态全景图</h3><ul><li><p><strong>G_NEW (Young)</strong>:</p><ul><li><p><strong>定义</strong>: 所有新创建的对象默认都是这个状态。</p></li><li><p><strong>命运</strong>: 在 Minor GC 中，要么死掉，要么变成 Survivor。</p></li></ul></li><li><p><strong>G_SURVIVAL</strong>:</p><ul><li><p><strong>定义</strong>: 经历了一次 Minor GC 仍然存活，但还没“老”够两轮的对象。</p></li><li><p><strong>作用</strong>: 这是一个缓冲带。很多对象可能刚好活过了一次 GC（例如跨帧存在的临时对象），如果直接晋升为老年代，下次 GC 就得扫描老年代或者等待 Major GC 才能回收它，成本太高。给它第二次机会，能有效减少“假冒老年代”的数量。</p></li></ul></li><li><p><strong>G_OLD0 (The &ldquo;Really&rdquo; Old)</strong>:</p><ul><li><p><strong>定义</strong>: 真正的老年代。</p></li><li><p><strong>特征</strong>: 颜色为黑色（Black）。GC 在 Minor Collection 期间<strong>完全无视</strong>它们。</p></li></ul></li><li><p><strong>G_OLD1 (Old but visited)</strong>:</p><ul><li><strong>定义</strong>: 这也是老年代，但在当前的 GC 周期中，它们是“刚晋升”上来的，或者有着特殊的标记意义。在源码中，<code>G_OLD0</code> 和 <code>G_OLD1</code> 经常通过位运算切换，用于区分不同周期的老年代，防止在同一个周期内重复处理。</li></ul></li><li><p><strong>G_TOUCHED (The Remembered Set)</strong>:</p><ul><li><p><strong>定义</strong>: 一个被“弄脏”的老年代对象。</p></li><li><p><strong>触发</strong>: 当 <code>old_obj[key] = new_obj</code> 发生时，<code>old_obj</code> 会从 <code>G_OLD</code> 变为 <code>G_TOUCHED</code>。</p></li><li><p><strong>存储</strong>: 它们会被链入 <code>grayagain</code> 列表。</p></li></ul></li></ul><h3 id=状态流转图>状态流转图</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-fallback data-lang=fallback><span class=line><span class=cl>[ G_NEW ] --(Minor GC 存活)--&gt; [ G_SURVIVAL ] --(下一次 Minor GC 存活)--&gt; [ G_OLD1 ] --&gt; [ G_OLD0 ]
+</span></span><span class=line><span class=cl>    ^                                                                         |
+</span></span><span class=line><span class=cl>    |                                                                         |
+</span></span><span class=line><span class=cl>    +----(被引用)----&lt; [ G_TOUCHED ] &lt;----(写屏障触发)-------------------------+
+</span></span></code></pre></td></tr></table></div></div><h2 id=关键机制向前写屏障-forward-write-barrier>关键机制：向前写屏障 (Forward Write Barrier)</h2><p>分代 GC 的核心难题是：<strong>如何知道哪些老年代对象引用了年轻代对象？</strong> 如果不解决这个问题，回收年轻代时就必须扫描所有老年代对象，这会极其缓慢。</p><p>Lua 使用 <strong>向前写屏障（Forward Write Barrier）</strong> 来解决。</p><ol><li>当执行 t[k] = v 时，如果 t 是老年代（Black），而 v 是新对象（White/Young）。</li><li>触发屏障：luaC_barrier_。</li><li>状态变更： t 被标记为 G_TOUCHED。</li><li>加入列表： t 被放入 grayagain 列表（在这个上下文中，它被用作待扫描的根集合的一部分）。</li></ol><h3 id=屏障触发逻辑>屏障触发逻辑</h3><p>当执行 <code>lua_settable</code> 或类似操作（<code>t[k] = v</code>）时，虚拟机会调用 <code>luaC_barrier_</code>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-c data-lang=c><span class=line><span class=cl><span class=c1>// 伪代码解析 lgc.c 中的 luaC_barrier_
+</span></span></span><span class=line><span class=cl><span class=kt>void</span> <span class=nf>luaC_barrier_</span> <span class=p>(</span><span class=n>lua_State</span> <span class=o>*</span><span class=n>L</span><span class=p>,</span> <span class=n>GCObject</span> <span class=o>*</span><span class=n>o</span><span class=p>,</span> <span class=n>GCObject</span> <span class=o>*</span><span class=n>v</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=c1>// o 是父对象 (table), v 是子对象 (value)
+</span></span></span><span class=line><span class=cl>    
+</span></span><span class=line><span class=cl>    <span class=c1>// 只有当父对象是老年代 (isold)，且子对象是新对象 (iswhite) 时才触发
+</span></span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nf>isold</span><span class=p>(</span><span class=n>o</span><span class=p>)</span> <span class=o>&amp;&amp;</span> <span class=nf>iswhite</span><span class=p>(</span><span class=n>v</span><span class=p>))</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 标记 1: 将父对象标记为 TOUCHED
+</span></span></span><span class=line><span class=cl>        <span class=c1>// 这意味着它不再是纯粹的 OLD，它持有对 Young 的引用
+</span></span></span><span class=line><span class=cl>        <span class=nf>setage</span><span class=p>(</span><span class=n>o</span><span class=p>,</span> <span class=n>G_TOUCHED</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 标记 2: 将其放入 grayagain 列表
+</span></span></span><span class=line><span class=cl>        <span class=c1>// grayagain 本质上就是 &#34;Remembered Set&#34; (记忆集)
+</span></span></span><span class=line><span class=cl>        <span class=nf>linkgclist</span><span class=p>(</span><span class=n>o</span><span class=p>,</span> <span class=n>g</span><span class=o>-&gt;</span><span class=n>grayagain</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=为什么叫向前>为什么叫“向前”？</h3><p>Lua 使用 <strong>向前写屏障（Forward Write Barrier）</strong> 来解决。这与增量 GC 中使用的“向后写屏障（Backwards Barrier，将父节点颜色改回灰色）”不同。</p><p>在增量 GC 中，如果我们把黑色对象改回灰色（向后），GC 就需要重新扫描它。但在分代 GC 中，我们不希望重新扫描整个对象（如果它很大）。
+Lua 的处理方式其实更接近于“把这个老年代对象暂时看作根节点”。在 Minor GC 开始时，它是扫描的起点之一。</p><h2 id=次级回收-minor-collection-的详细流程>次级回收 (Minor Collection) 的详细流程</h2><p>次级回收（Minor Collection）的目标是：<strong>只清理年轻代对象</strong>，且<strong>必须是原子操作</strong>（不可中断，但由于只扫描年轻代和被触碰的老年代，速度极快）。</p><h3 id=触发时机>触发时机</h3><p>由 <code>genminormul</code> 参数控制。默认情况下，当新分配的内存达到上次存活内存的 20% 时触发。</p><h3 id=步骤详解>步骤详解</h3><ol><li><p><strong>准备与根扫描 (Mark Roots)</strong>:</p><ul><li><p>GC 扫描主线程栈、全局注册表 (Registry) 等根节点。</p></li><li><p>注意：这里只标记根节点<strong>直接指向</strong>的年轻代对象。</p></li></ul></li><li><p><strong>处理记忆集 (Scan GrayAgain / Touched)</strong>:</p><ul><li><p>这是分代 GC 能够成立的基石。</p></li><li><p>GC 遍历 <code>grayagain</code> 列表。这里面全是 <code>G_TOUCHED</code> 的老对象。</p></li><li><p><strong>关键逻辑</strong>: 如果一个老对象在 <code>grayagain</code> 里，GC 会扫描它引用的所有子对象。如果子对象是 <code>G_NEW</code>，则将其标记为活跃。</p></li><li><p><strong>状态恢复</strong>: 扫描完后，这个老对象通常会被改回 <code>G_OLD</code> 状态。如果它之后又被修改，写屏障会再次捕获它。</p></li></ul></li><li><p><strong>递归追踪 (Trace)</strong>:</p><ul><li><p>从上述步骤产生的灰色对象开始遍历。</p></li><li><p><strong>截断机制 (The Cut-off)</strong>: 遍历过程中，一旦遇到 <code>isold(obj)</code> 为真的对象，立刻停止深入。因为老年代对象被默认认为是“这就到头了，不用管它的子节点（除非它在 grayagain 里）”。</p></li><li><p>这保证了遍历仅限制在年轻代对象图中。</p></li></ul></li><li><p><strong>清扫与晋升 (Sweep and Promote)</strong>:</p><ul><li>此时，所有未被标记的年轻代对象都是垃圾。Lua 遍历全局对象链表（这在 Lua 5.4 中通过优化，不再遍历整个 allgc，而是利用指针操作高效处理）：<ul><li>死亡对象（Dead Young）： 既不是老年代，也没被标记为活跃。 -> 释放内存。</li><li>幸存对象（Survivor）： 它是年轻代，但被标记为活跃。<ul><li>如果它之前是 G_NEW，将其改为 G_SURVIVAL（给它第二次机会证明自己是垃圾）。</li><li>如果它之前是 G_SURVIVAL，将其晋升为 G_OLD（晋升）。</li></ul></li><li>老年代对象（Old）： 忽略，不处理。</li></ul></li></ul></li></ol><h2 id=逆序链表与哨兵>逆序链表与哨兵</h2><p>这是 Lua GC 实现中最优雅的部分。Lua 不需要移动内存块来整理堆，它通过巧妙的链表操作实现了逻辑上的“分代移动”。</p><h3 id=数据结构时间逆序链表>数据结构：时间逆序链表</h3><p>Lua 的全局对象链表 <code>allgc</code> 是<strong>按时间逆序排列</strong>的。因为新对象总是插入到链表头部。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>内存地址:  High  &lt;--------------------------------------&gt;  Low
+</span></span><span class=line><span class=cl>逻辑链表:  HEAD (g-&gt;allgc)
+</span></span><span class=line><span class=cl>            |
+</span></span><span class=line><span class=cl>            v
+</span></span><span class=line><span class=cl>      [ 新对象 A ] -&gt; [ 新对象 B ] -&gt; [ 幸存者 S ] -&gt; [ 老对象 O1 ] -&gt; [ 老对象 O2 ] -&gt; NULL
+</span></span><span class=line><span class=cl>      (G_NEW)         (G_NEW)        (G_SURVIVAL)     (G_OLD)          (G_OLD)
+</span></span><span class=line><span class=cl>                                            ^
+</span></span><span class=line><span class=cl>                                            |
+</span></span><span class=line><span class=cl>                                      g-&gt;survival (哨兵指针)
+</span></span></code></pre></td></tr></table></div></div><p><code>g->survival</code> 指针指向了<strong>上一次 GC 时的边界</strong>。换句话说，<code>g->survival</code> 之后的所有对象，在本次 Minor GC 开始前就已经存在了，它们要么是幸存者，要么是老年代，反正<strong>绝不是 G_NEW</strong>。</p><h3 id=截断式清扫-sweep>截断式清扫 (Sweep)</h3><p>由于这种排列特性，Minor GC 的清扫阶段<strong>不需要遍历整个链表</strong>。</p><p><strong>Sweep 逻辑演示 (伪代码):</strong></p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-c data-lang=c><span class=line><span class=cl><span class=n>GCObject</span> <span class=o>**</span><span class=n>p</span> <span class=o>=</span> <span class=o>&amp;</span><span class=n>g</span><span class=o>-&gt;</span><span class=n>allgc</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=n>GCObject</span> <span class=o>*</span><span class=n>curr</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=n>GCObject</span> <span class=o>*</span><span class=n>limit</span> <span class=o>=</span> <span class=n>g</span><span class=o>-&gt;</span><span class=n>survival</span><span class=p>;</span> <span class=c1>// 我们的终点站
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 只要还没碰到老年代的边界，就一直循环
+</span></span></span><span class=line><span class=cl><span class=k>while</span> <span class=p>((</span><span class=n>curr</span> <span class=o>=</span> <span class=o>*</span><span class=n>p</span><span class=p>)</span> <span class=o>!=</span> <span class=n>limit</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nf>is_marked</span><span class=p>(</span><span class=n>curr</span><span class=p>))</span> <span class=p>{</span> 
+</span></span><span class=line><span class=cl>        <span class=c1>// === 存活对象处理 ===
+</span></span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 晋升逻辑：
+</span></span></span><span class=line><span class=cl>        <span class=c1>// 如果是 G_NEW -&gt; 变成 G_SURVIVAL
+</span></span></span><span class=line><span class=cl>        <span class=c1>// 如果是 G_SURVIVAL -&gt; 变成 G_OLD1 (正式晋升)
+</span></span></span><span class=line><span class=cl>        <span class=nf>promote_age</span><span class=p>(</span><span class=n>curr</span><span class=p>);</span> 
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 清除标记位，为下一次 GC 做准备 (变为白色)
+</span></span></span><span class=line><span class=cl>        <span class=nf>make_white</span><span class=p>(</span><span class=n>curr</span><span class=p>);</span> 
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 指针步进：这个对象留下了，检查下一个
+</span></span></span><span class=line><span class=cl>        <span class=n>p</span> <span class=o>=</span> <span class=o>&amp;</span><span class=n>curr</span><span class=o>-&gt;</span><span class=n>next</span><span class=p>;</span> 
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>    <span class=p>}</span> <span class=k>else</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=c1>// === 死亡对象处理 ===
+</span></span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 这是一个垃圾对象！
+</span></span></span><span class=line><span class=cl>        <span class=n>GCObject</span> <span class=o>*</span><span class=n>dead</span> <span class=o>=</span> <span class=n>curr</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 链表摘除操作：
+</span></span></span><span class=line><span class=cl>        <span class=c1>// *p 指向 curr-&gt;next，直接跳过 current
+</span></span></span><span class=line><span class=cl>        <span class=o>*</span><span class=n>p</span> <span class=o>=</span> <span class=n>curr</span><span class=o>-&gt;</span><span class=n>next</span><span class=p>;</span> 
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 释放内存
+</span></span></span><span class=line><span class=cl>        <span class=nf>freeobj</span><span class=p>(</span><span class=n>L</span><span class=p>,</span> <span class=n>dead</span><span class=p>);</span> 
+</span></span><span class=line><span class=cl>        
+</span></span><span class=line><span class=cl>        <span class=c1>// 注意：这里 p 不动，因为 *p 已经指向了原本的 next，
+</span></span></span><span class=line><span class=cl>        <span class=c1>// 下次循环会直接检查那个新对象。
+</span></span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 循环结束！
+</span></span></span><span class=line><span class=cl><span class=c1>// 此时 *p 等于 limit。
+</span></span></span><span class=line><span class=cl><span class=c1>// 后面那几百万个老年代对象完全不需要访问，Cache 友好度满分。
+</span></span></span></code></pre></td></tr></table></div></div><h3 id=链表剪接与状态更新>链表剪接与状态更新</h3><p>在 Sweep 结束后，我们需要设定新的边界。</p><p>假设在上面的例子中，<code>新对象 A</code> 死了，<code>新对象 B</code> 活了。
+现在的链表变成了：
+<code>[ B (Survival) ] -> [ S (Old) ] -> [ O1 (Old) ] ...</code></p><p>此时，<code>g->survival</code> 指针需要更新，指向现在的表头 <code>g->allgc</code>。
+<strong>这一步操作瞬间完成了“代”的切换。</strong> 今天幸存下来的对象，在下一次 GC 时就会位于 <code>g->survival</code> 指针的后面，成为受保护的老年代。</p><h2 id=什么时候会崩回退到-major-gc>什么时候会“崩”？(回退到 Major GC)</h2><p>分代 GC 虽好，但在某些模式下会失效，甚至比普通 GC 更慢。Lua 5.4 引入了回退机制。</p><h3 id=触发-major-gc-的条件>触发 Major GC 的条件</h3><ol><li><p><strong>老年代膨胀 (Memory Growth)</strong>:</p><ul><li><p>通过 <code>genmajormul</code> 参数控制（默认 100%）。</p></li><li><p>如果老年代的内存大小比上一次 Major GC 时翻了一倍，说明老年代本身在快速增长，Minor GC 已经无法控制内存总量了，必须做一次全量清理。</p></li></ul></li><li><p><strong>Bad Touch (G_TOUCHED 过多)</strong>:</p><ul><li><p>这是最阴险的性能杀手。</p></li><li><p><strong>原理</strong>: Minor GC 的成本 = 扫描年轻代 + <strong>扫描 Touched 老年代</strong>。</p></li><li><p>如果 <code>grayagain</code> 列表非常长，G_TOUCHED 的对象太多了。这意味着老年代频繁指向新对象（例如把一个巨大的老表当成缓冲区不断写入新数据）,Minor GC 就不再是“Minor”了，它会退化成一次接近全量的扫描。</p></li><li><p>Lua 内部会计数 <code>grayagain</code> 的大小，如果它超过了总内存的一定比例，就会强制转为 Major GC。</p></li></ul></li></ol><p>此时，Lua 会触发一次 Major Collection。这本质上是一次完整的标记-清除循环：</p><ol><li>扫描所有对象。</li><li>清理所有死对象（无论老少）。</li><li>重置所有存活对象为 G_OLD。</li><li>清空 grayagain 列表。</li></ol><h3 id=bad-touch-代码示例>&ldquo;Bad Touch&rdquo; 代码示例</h3><p>这就是所谓的“把老年代当缓冲区用”。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-lua data-lang=lua><span class=line><span class=cl><span class=c1>-- 场景：config 是一个常驻内存的老年代 Table</span>
+</span></span><span class=line><span class=cl><span class=kd>local</span> <span class=n>config</span> <span class=o>=</span> <span class=p>{</span> <span class=n>data</span> <span class=o>=</span> <span class=p>{}</span> <span class=p>}</span> 
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>-- 这是一个高频调用的函数，比如每帧调用</span>
+</span></span><span class=line><span class=cl><span class=kr>function</span> <span class=nf>onUpdate</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=c1>-- 这是一个典型的 Bad Touch 模式</span>
+</span></span><span class=line><span class=cl>    <span class=c1>-- 我们不断地创建新表 {}，并把它赋值给老表 config 的字段</span>
+</span></span><span class=line><span class=cl>    
+</span></span><span class=line><span class=cl>    <span class=c1>-- 触发写屏障：config 变黑 -&gt; 变灰 (TOUCHED) -&gt; 加入 grayagain</span>
+</span></span><span class=line><span class=cl>    <span class=n>config.last_frame_data</span> <span class=o>=</span> <span class=p>{</span> <span class=n>x</span> <span class=o>=</span> <span class=mi>1</span><span class=p>,</span> <span class=n>y</span> <span class=o>=</span> <span class=mi>2</span> <span class=p>}</span> 
+</span></span><span class=line><span class=cl>    
+</span></span><span class=line><span class=cl>    <span class=c1>-- 这种写法会导致 config 表在每一次 Minor GC 中都被扫描！</span>
+</span></span><span class=line><span class=cl>    <span class=c1>-- 如果 config 表很大（比如有几万个字段），GC 耗时会瞬间飙升。</span>
+</span></span><span class=line><span class=cl><span class=kr>end</span>
+</span></span></code></pre></td></tr></table></div></div><p><strong>优化建议</strong>: 如果必须频繁更新，尽量复用年轻代对象，或者将变动的数据隔离在一个独立的年轻代 Table 中，不要让它频繁污染巨大的老年代根节点。</p><h2 id=实际应用中的问题>实际应用中的问题</h2><ul><li>分代回收的次级回收周期以及全量回收都是是 Stop-the-World"（全停顿） 的策略。</li><li>“脏”老年代过多 (内存过高)时的性能问题</li></ul><p>在对延迟极度敏感的场景（如战斗逻辑、高频服务端）中，是不能接受了, 会导致大内存服务的卡顿问题</p><h2 id=优化策略>优化策略</h2><p>在不同内存使用情况下采用最适合的垃圾回收方式，以优化性能</p><ul><li>在低内存时(比如500M)使用分代回收，享受他带来的性能提升</li><li>当内存使用较高时，切换到增量模式，通过周期性地执行小步骤的垃圾回收，避免一次性长时间的GC暂停</li></ul></section><footer class=article-footer><section class=article-tags><a href=/WBlog/tags/lua/>Lua</a>
+<a href=/WBlog/tags/gc/>GC</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>true</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><footer class=site-footer><section class=copyright>&copy;
+2020 -
+2026 白山羊</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=4.0.0>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><script type=module>
+    import gallery from '\/WBlog\/ts\/gallery.js';
+
+    const articleContent = document.querySelector('.article-content');
+    const shouldLoad = articleContent && (articleContent.querySelectorAll('figure').length > 0 || articleContent.querySelectorAll('img.gallery-image').length > 0);
+    
+    if (shouldLoad) {
+        gallery(articleContent);
+
+        const PhotoSwipeLightbox = (await import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe-lightbox.esm.min.js")).default;
+        const styleHref = "https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.css";
+
+        const styleTag = document.createElement('link');
+        styleTag.rel = 'stylesheet';
+        styleTag.href = styleHref;
+        document.head.appendChild(styleTag);
+
+        const lightbox = new PhotoSwipeLightbox({
+            gallerySelector: '.article-content',
+            childSelector: 'figure a.image-link',
+            pswpModule: () => import("https:\/\/cdn.jsdelivr.net\/npm\/photoswipe@5.4.4\/dist\/photoswipe.esm.min.js")
+        });
+        lightbox.init();
+    }
+</script></main></div><script type=text/javascript src=/WBlog/ts/main.acaf849f2b273f6a8368a58b001f336738d0c948d92e79b116467d0c7515f932.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

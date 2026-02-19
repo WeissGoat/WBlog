@@ -1,4 +1,430 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>白山羊</title><link>https://WeissGoat.github.io/WBlog/</link><description>Recent content on 白山羊</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Mon, 05 Feb 2024 18:00:00 +0800</lastBuildDate><atom:link href="https://WeissGoat.github.io/WBlog/index.xml" rel="self" type="application/rss+xml"/><item><title>Lua GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>白山羊</title><link>https://WeissGoat.github.io/WBlog/</link><description>Recent content on 白山羊</description><generator>Hugo -- gohugo.io</generator><language>en-us</language><lastBuildDate>Sun, 08 Feb 2026 18:32:29 +0800</lastBuildDate><atom:link href="https://WeissGoat.github.io/WBlog/index.xml" rel="self" type="application/rss+xml"/><item><title>Lua 分代 GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-%E5%88%86%E4%BB%A3-gc/</link><pubDate>Sun, 08 Feb 2026 18:32:29 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-%E5%88%86%E4%BB%A3-gc/</guid><description>&lt;p&gt;Lua 5.4 引入的&lt;strong&gt;分代垃圾回收（Generational GC）&lt;/strong&gt;,相比于 Lua 5.3 的增量式 GC 专注于“降低停顿时间（Latency）”，Lua 5.4 的分代 GC 旨在解决“高吞吐量（Throughput）”场景下的性能瓶颈。特别是对于那些每一帧都产生大量临时对象（Short-lived objects）的游戏或高并发服务，分代 GC 能带来巨大的性能提升。&lt;/p&gt;
+&lt;h2 id="分代假设"&gt;分代假设
+&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;分代假设（Generational Hypothesis）&lt;/strong&gt; 认为：&lt;strong&gt;“绝大多数对象在创建后很快就会死亡。”&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;在 Lua 5.3 的增量 GC 中，哪怕我们把 GC 拆分成了很多小步，但为了完成一轮完整的 GC 周期，收集器最终还是需要遍历整个堆（或者至少是大部分活跃对象）。如果堆中有几百万个长期存活的对象（比如加载的配置表、全局注册表），每次 GC 都要去确认它们“还在不在”，这本身就是一种巨大的算力浪费。&lt;/p&gt;
+&lt;p&gt;Lua 5.4 的分代模式试图达成以下目标：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;忽略老年代&lt;/strong&gt;：默认老年代对象是“不死”的，除非有证据表明它们引用了新对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;聚焦年轻代&lt;/strong&gt;：集中火力快速扫描和清理新创建的对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;零拷贝（Non-Moving）&lt;/strong&gt;：作为嵌入式语言，Lua 需要保持 C API 的指针稳定性，因此不能像 Java 或 Go 那样通过物理移动内存来整理堆。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这种设计使得 Lua 5.4 在处理短命对象（如临时字符串、闭包、表）密集的场景下，性能比 5.3 提升显著，同时保持了极低的延迟。&lt;/p&gt;
+&lt;h2 id="对象状态的深度解析"&gt;对象状态的深度解析
+&lt;/h2&gt;&lt;p&gt;在分代模式下，Lua 利用 &lt;code&gt;GCObject&lt;/code&gt; 头部的标记位（Mark bits）构建了一个精细的状态机。为了更平滑地管理晋升，Lua 5.4 实际上将老年代细分为了两个阶段。&lt;/p&gt;
+&lt;h3 id="状态全景图"&gt;状态全景图
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;G_NEW (Young)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;定义&lt;/strong&gt;: 所有新创建的对象默认都是这个状态。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;命运&lt;/strong&gt;: 在 Minor GC 中，要么死掉，要么变成 Survivor。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;G_SURVIVAL&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;定义&lt;/strong&gt;: 经历了一次 Minor GC 仍然存活，但还没“老”够两轮的对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;作用&lt;/strong&gt;: 这是一个缓冲带。很多对象可能刚好活过了一次 GC（例如跨帧存在的临时对象），如果直接晋升为老年代，下次 GC 就得扫描老年代或者等待 Major GC 才能回收它，成本太高。给它第二次机会，能有效减少“假冒老年代”的数量。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;G_OLD0 (The &amp;ldquo;Really&amp;rdquo; Old)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;定义&lt;/strong&gt;: 真正的老年代。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;特征&lt;/strong&gt;: 颜色为黑色（Black）。GC 在 Minor Collection 期间&lt;strong&gt;完全无视&lt;/strong&gt;它们。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;G_OLD1 (Old but visited)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;定义&lt;/strong&gt;: 这也是老年代，但在当前的 GC 周期中，它们是“刚晋升”上来的，或者有着特殊的标记意义。在源码中，&lt;code&gt;G_OLD0&lt;/code&gt; 和 &lt;code&gt;G_OLD1&lt;/code&gt; 经常通过位运算切换，用于区分不同周期的老年代，防止在同一个周期内重复处理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;G_TOUCHED (The Remembered Set)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;定义&lt;/strong&gt;: 一个被“弄脏”的老年代对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;触发&lt;/strong&gt;: 当 &lt;code&gt;old_obj[key] = new_obj&lt;/code&gt; 发生时，&lt;code&gt;old_obj&lt;/code&gt; 会从 &lt;code&gt;G_OLD&lt;/code&gt; 变为 &lt;code&gt;G_TOUCHED&lt;/code&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;存储&lt;/strong&gt;: 它们会被链入 &lt;code&gt;grayagain&lt;/code&gt; 列表。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="状态流转图"&gt;状态流转图
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-fallback" data-lang="fallback"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;[ G_NEW ] --(Minor GC 存活)--&amp;gt; [ G_SURVIVAL ] --(下一次 Minor GC 存活)--&amp;gt; [ G_OLD1 ] --&amp;gt; [ G_OLD0 ]
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ^ |
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; | |
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; +----(被引用)----&amp;lt; [ G_TOUCHED ] &amp;lt;----(写屏障触发)-------------------------+
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h2 id="关键机制向前写屏障-forward-write-barrier"&gt;关键机制：向前写屏障 (Forward Write Barrier)
+&lt;/h2&gt;&lt;p&gt;分代 GC 的核心难题是：&lt;strong&gt;如何知道哪些老年代对象引用了年轻代对象？&lt;/strong&gt; 如果不解决这个问题，回收年轻代时就必须扫描所有老年代对象，这会极其缓慢。&lt;/p&gt;
+&lt;p&gt;Lua 使用 &lt;strong&gt;向前写屏障（Forward Write Barrier）&lt;/strong&gt; 来解决。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;当执行 t[k] = v 时，如果 t 是老年代（Black），而 v 是新对象（White/Young）。&lt;/li&gt;
+&lt;li&gt;触发屏障：luaC_barrier_。&lt;/li&gt;
+&lt;li&gt;状态变更： t 被标记为 G_TOUCHED。&lt;/li&gt;
+&lt;li&gt;加入列表： t 被放入 grayagain 列表（在这个上下文中，它被用作待扫描的根集合的一部分）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="屏障触发逻辑"&gt;屏障触发逻辑
+&lt;/h3&gt;&lt;p&gt;当执行 &lt;code&gt;lua_settable&lt;/code&gt; 或类似操作（&lt;code&gt;t[k] = v&lt;/code&gt;）时，虚拟机会调用 &lt;code&gt;luaC_barrier_&lt;/code&gt;。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-c" data-lang="c"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;// 伪代码解析 lgc.c 中的 luaC_barrier_
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kt"&gt;void&lt;/span&gt; &lt;span class="nf"&gt;luaC_barrier_&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;lua_State&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;o&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;v&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// o 是父对象 (table), v 是子对象 (value)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 只有当父对象是老年代 (isold)，且子对象是新对象 (iswhite) 时才触发
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="nf"&gt;isold&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;o&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class="nf"&gt;iswhite&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;v&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 标记 1: 将父对象标记为 TOUCHED
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 这意味着它不再是纯粹的 OLD，它持有对 Young 的引用
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nf"&gt;setage&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;o&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;G_TOUCHED&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 标记 2: 将其放入 grayagain 列表
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// grayagain 本质上就是 &amp;#34;Remembered Set&amp;#34; (记忆集)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nf"&gt;linkgclist&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;o&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;g&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;grayagain&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="为什么叫向前"&gt;为什么叫“向前”？
+&lt;/h3&gt;&lt;p&gt;Lua 使用 &lt;strong&gt;向前写屏障（Forward Write Barrier）&lt;/strong&gt; 来解决。这与增量 GC 中使用的“向后写屏障（Backwards Barrier，将父节点颜色改回灰色）”不同。&lt;/p&gt;
+&lt;p&gt;在增量 GC 中，如果我们把黑色对象改回灰色（向后），GC 就需要重新扫描它。但在分代 GC 中，我们不希望重新扫描整个对象（如果它很大）。
+Lua 的处理方式其实更接近于“把这个老年代对象暂时看作根节点”。在 Minor GC 开始时，它是扫描的起点之一。&lt;/p&gt;
+&lt;h2 id="次级回收-minor-collection-的详细流程"&gt;次级回收 (Minor Collection) 的详细流程
+&lt;/h2&gt;&lt;p&gt;次级回收（Minor Collection）的目标是：&lt;strong&gt;只清理年轻代对象&lt;/strong&gt;，且&lt;strong&gt;必须是原子操作&lt;/strong&gt;（不可中断，但由于只扫描年轻代和被触碰的老年代，速度极快）。&lt;/p&gt;
+&lt;h3 id="触发时机"&gt;触发时机
+&lt;/h3&gt;&lt;p&gt;由 &lt;code&gt;genminormul&lt;/code&gt; 参数控制。默认情况下，当新分配的内存达到上次存活内存的 20% 时触发。&lt;/p&gt;
+&lt;h3 id="步骤详解"&gt;步骤详解
+&lt;/h3&gt;&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;准备与根扫描 (Mark Roots)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;GC 扫描主线程栈、全局注册表 (Registry) 等根节点。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;注意：这里只标记根节点&lt;strong&gt;直接指向&lt;/strong&gt;的年轻代对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;处理记忆集 (Scan GrayAgain / Touched)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;这是分代 GC 能够成立的基石。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;GC 遍历 &lt;code&gt;grayagain&lt;/code&gt; 列表。这里面全是 &lt;code&gt;G_TOUCHED&lt;/code&gt; 的老对象。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;关键逻辑&lt;/strong&gt;: 如果一个老对象在 &lt;code&gt;grayagain&lt;/code&gt; 里，GC 会扫描它引用的所有子对象。如果子对象是 &lt;code&gt;G_NEW&lt;/code&gt;，则将其标记为活跃。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;状态恢复&lt;/strong&gt;: 扫描完后，这个老对象通常会被改回 &lt;code&gt;G_OLD&lt;/code&gt; 状态。如果它之后又被修改，写屏障会再次捕获它。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;递归追踪 (Trace)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;从上述步骤产生的灰色对象开始遍历。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;截断机制 (The Cut-off)&lt;/strong&gt;: 遍历过程中，一旦遇到 &lt;code&gt;isold(obj)&lt;/code&gt; 为真的对象，立刻停止深入。因为老年代对象被默认认为是“这就到头了，不用管它的子节点（除非它在 grayagain 里）”。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;这保证了遍历仅限制在年轻代对象图中。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;清扫与晋升 (Sweep and Promote)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;此时，所有未被标记的年轻代对象都是垃圾。Lua 遍历全局对象链表（这在 Lua 5.4 中通过优化，不再遍历整个 allgc，而是利用指针操作高效处理）：
+&lt;ul&gt;
+&lt;li&gt;死亡对象（Dead Young）： 既不是老年代，也没被标记为活跃。 -&amp;gt; 释放内存。&lt;/li&gt;
+&lt;li&gt;幸存对象（Survivor）： 它是年轻代，但被标记为活跃。
+&lt;ul&gt;
+&lt;li&gt;如果它之前是 G_NEW，将其改为 G_SURVIVAL（给它第二次机会证明自己是垃圾）。&lt;/li&gt;
+&lt;li&gt;如果它之前是 G_SURVIVAL，将其晋升为 G_OLD（晋升）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;老年代对象（Old）： 忽略，不处理。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="逆序链表与哨兵"&gt;逆序链表与哨兵
+&lt;/h2&gt;&lt;p&gt;这是 Lua GC 实现中最优雅的部分。Lua 不需要移动内存块来整理堆，它通过巧妙的链表操作实现了逻辑上的“分代移动”。&lt;/p&gt;
+&lt;h3 id="数据结构时间逆序链表"&gt;数据结构：时间逆序链表
+&lt;/h3&gt;&lt;p&gt;Lua 的全局对象链表 &lt;code&gt;allgc&lt;/code&gt; 是&lt;strong&gt;按时间逆序排列&lt;/strong&gt;的。因为新对象总是插入到链表头部。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;span class="lnt"&gt;8
+&lt;/span&gt;&lt;span class="lnt"&gt;9
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;内存地址: High &amp;lt;--------------------------------------&amp;gt; Low
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;逻辑链表: HEAD (g-&amp;gt;allgc)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; |
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; v
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; [ 新对象 A ] -&amp;gt; [ 新对象 B ] -&amp;gt; [ 幸存者 S ] -&amp;gt; [ 老对象 O1 ] -&amp;gt; [ 老对象 O2 ] -&amp;gt; NULL
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; (G_NEW) (G_NEW) (G_SURVIVAL) (G_OLD) (G_OLD)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ^
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; |
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; g-&amp;gt;survival (哨兵指针)
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;code&gt;g-&amp;gt;survival&lt;/code&gt; 指针指向了&lt;strong&gt;上一次 GC 时的边界&lt;/strong&gt;。换句话说，&lt;code&gt;g-&amp;gt;survival&lt;/code&gt; 之后的所有对象，在本次 Minor GC 开始前就已经存在了，它们要么是幸存者，要么是老年代，反正&lt;strong&gt;绝不是 G_NEW&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="截断式清扫-sweep"&gt;截断式清扫 (Sweep)
+&lt;/h3&gt;&lt;p&gt;由于这种排列特性，Minor GC 的清扫阶段&lt;strong&gt;不需要遍历整个链表&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Sweep 逻辑演示 (伪代码):&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;span class="lnt"&gt;42
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-c" data-lang="c"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;**&lt;/span&gt;&lt;span class="n"&gt;p&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&lt;/span&gt;&lt;span class="n"&gt;g&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;allgc&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;limit&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;g&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;survival&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt; &lt;span class="c1"&gt;// 我们的终点站
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;// 只要还没碰到老年代的边界，就一直循环
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="p"&gt;((&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;p&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;!=&lt;/span&gt; &lt;span class="n"&gt;limit&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="nf"&gt;is_marked&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// === 存活对象处理 ===
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 晋升逻辑：
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 如果是 G_NEW -&amp;gt; 变成 G_SURVIVAL
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 如果是 G_SURVIVAL -&amp;gt; 变成 G_OLD1 (正式晋升)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nf"&gt;promote_age&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 清除标记位，为下一次 GC 做准备 (变为白色)
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nf"&gt;make_white&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 指针步进：这个对象留下了，检查下一个
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;p&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="o"&gt;&amp;amp;&lt;/span&gt;&lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;next&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt; &lt;span class="k"&gt;else&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// === 死亡对象处理 ===
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 这是一个垃圾对象！
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;GCObject&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;dead&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 链表摘除操作：
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// *p 指向 curr-&amp;gt;next，直接跳过 current
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="o"&gt;*&lt;/span&gt;&lt;span class="n"&gt;p&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;curr&lt;/span&gt;&lt;span class="o"&gt;-&amp;gt;&lt;/span&gt;&lt;span class="n"&gt;next&lt;/span&gt;&lt;span class="p"&gt;;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 释放内存
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nf"&gt;freeobj&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;L&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dead&lt;/span&gt;&lt;span class="p"&gt;);&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 注意：这里 p 不动，因为 *p 已经指向了原本的 next，
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;// 下次循环会直接检查那个新对象。
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;// 循环结束！
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;// 此时 *p 等于 limit。
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;// 后面那几百万个老年代对象完全不需要访问，Cache 友好度满分。
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="链表剪接与状态更新"&gt;链表剪接与状态更新
+&lt;/h3&gt;&lt;p&gt;在 Sweep 结束后，我们需要设定新的边界。&lt;/p&gt;
+&lt;p&gt;假设在上面的例子中，&lt;code&gt;新对象 A&lt;/code&gt; 死了，&lt;code&gt;新对象 B&lt;/code&gt; 活了。
+现在的链表变成了：
+&lt;code&gt;[ B (Survival) ] -&amp;gt; [ S (Old) ] -&amp;gt; [ O1 (Old) ] ...&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;此时，&lt;code&gt;g-&amp;gt;survival&lt;/code&gt; 指针需要更新，指向现在的表头 &lt;code&gt;g-&amp;gt;allgc&lt;/code&gt;。
+&lt;strong&gt;这一步操作瞬间完成了“代”的切换。&lt;/strong&gt; 今天幸存下来的对象，在下一次 GC 时就会位于 &lt;code&gt;g-&amp;gt;survival&lt;/code&gt; 指针的后面，成为受保护的老年代。&lt;/p&gt;
+&lt;h2 id="什么时候会崩回退到-major-gc"&gt;什么时候会“崩”？(回退到 Major GC)
+&lt;/h2&gt;&lt;p&gt;分代 GC 虽好，但在某些模式下会失效，甚至比普通 GC 更慢。Lua 5.4 引入了回退机制。&lt;/p&gt;
+&lt;h3 id="触发-major-gc-的条件"&gt;触发 Major GC 的条件
+&lt;/h3&gt;&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;老年代膨胀 (Memory Growth)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;通过 &lt;code&gt;genmajormul&lt;/code&gt; 参数控制（默认 100%）。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;如果老年代的内存大小比上一次 Major GC 时翻了一倍，说明老年代本身在快速增长，Minor GC 已经无法控制内存总量了，必须做一次全量清理。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Bad Touch (G_TOUCHED 过多)&lt;/strong&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;这是最阴险的性能杀手。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;原理&lt;/strong&gt;: Minor GC 的成本 = 扫描年轻代 + &lt;strong&gt;扫描 Touched 老年代&lt;/strong&gt;。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;如果 &lt;code&gt;grayagain&lt;/code&gt; 列表非常长，G_TOUCHED 的对象太多了。这意味着老年代频繁指向新对象（例如把一个巨大的老表当成缓冲区不断写入新数据）,Minor GC 就不再是“Minor”了，它会退化成一次接近全量的扫描。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Lua 内部会计数 &lt;code&gt;grayagain&lt;/code&gt; 的大小，如果它超过了总内存的一定比例，就会强制转为 Major GC。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;此时，Lua 会触发一次 Major Collection。这本质上是一次完整的标记-清除循环：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;扫描所有对象。&lt;/li&gt;
+&lt;li&gt;清理所有死对象（无论老少）。&lt;/li&gt;
+&lt;li&gt;重置所有存活对象为 G_OLD。&lt;/li&gt;
+&lt;li&gt;清空 grayagain 列表。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="bad-touch-代码示例"&gt;&amp;ldquo;Bad Touch&amp;rdquo; 代码示例
+&lt;/h3&gt;&lt;p&gt;这就是所谓的“把老年代当缓冲区用”。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-lua" data-lang="lua"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;-- 场景：config 是一个常驻内存的老年代 Table&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kd"&gt;local&lt;/span&gt; &lt;span class="n"&gt;config&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;data&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;{}&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;-- 这是一个高频调用的函数，比如每帧调用&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kr"&gt;function&lt;/span&gt; &lt;span class="nf"&gt;onUpdate&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;-- 这是一个典型的 Bad Touch 模式&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;-- 我们不断地创建新表 {}，并把它赋值给老表 config 的字段&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;-- 触发写屏障：config 变黑 -&amp;gt; 变灰 (TOUCHED) -&amp;gt; 加入 grayagain&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;config.last_frame_data&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt; &lt;span class="n"&gt;x&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;y&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;2&lt;/span&gt; &lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;-- 这种写法会导致 config 表在每一次 Minor GC 中都被扫描！&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;-- 如果 config 表很大（比如有几万个字段），GC 耗时会瞬间飙升。&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kr"&gt;end&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;优化建议&lt;/strong&gt;: 如果必须频繁更新，尽量复用年轻代对象，或者将变动的数据隔离在一个独立的年轻代 Table 中，不要让它频繁污染巨大的老年代根节点。&lt;/p&gt;
+&lt;h2 id="实际应用中的问题"&gt;实际应用中的问题
+&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;分代回收的次级回收周期以及全量回收都是是 Stop-the-World&amp;quot;（全停顿） 的策略。&lt;/li&gt;
+&lt;li&gt;“脏”老年代过多 (内存过高)时的性能问题&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在对延迟极度敏感的场景（如战斗逻辑、高频服务端）中，是不能接受了, 会导致大内存服务的卡顿问题&lt;/p&gt;
+&lt;h2 id="优化策略"&gt;优化策略
+&lt;/h2&gt;&lt;p&gt;在不同内存使用情况下采用最适合的垃圾回收方式，以优化性能&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;在低内存时(比如500M)使用分代回收，享受他带来的性能提升&lt;/li&gt;
+&lt;li&gt;当内存使用较高时，切换到增量模式，通过周期性地执行小步骤的垃圾回收，避免一次性长时间的GC暂停&lt;/li&gt;
+&lt;/ul&gt;</description></item><item><title>Lua GC</title><link>https://WeissGoat.github.io/WBlog/p/lua-gc/</link><pubDate>Mon, 05 Feb 2024 18:00:00 +0800</pubDate><guid>https://WeissGoat.github.io/WBlog/p/lua-gc/</guid><description>&lt;h1 id="lua-gc-三色标记增量回收与写屏障"&gt;Lua GC ：三色标记、增量回收与写屏障
 &lt;/h1&gt;&lt;h2 id="从-stop-the-world-到增量"&gt;从 Stop-the-World 到增量
 &lt;/h2&gt;&lt;h3 id="lua-50简单的代价"&gt;Lua 5.0：简单的代价
 &lt;/h3&gt;&lt;p&gt;在 Lua 5.0 时代，GC 算法非常朴素：&lt;strong&gt;双倍阈值，全量回收&lt;/strong&gt;。&lt;/p&gt;
