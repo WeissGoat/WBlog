@@ -1,6 +1,6 @@
 ---
 title: "Lua 数据类型与GC对象"
-date: 2024-02-05T18:00:00+08:00
+date: 2026-02-05T18:00:00+08:00
 math: true
 license: true
 hidden: false
