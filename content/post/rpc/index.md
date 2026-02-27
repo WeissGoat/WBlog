@@ -8,9 +8,9 @@ license: true
 hidden: false
 comments: true
 categories:
-    - "rpc"
+    - "RPC"
 tags:
-    - "rpc"
+    - "RPC"
 ---
 
 在分布式系统的开发中，经常会听到或者使用到 RPC（Remote Procedure Call，远程过程调用）。RPC 的核心目标：**让你调用远程服务器上的函数，就像调用本地函数一样**
