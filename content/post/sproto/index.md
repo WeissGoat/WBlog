@@ -50,9 +50,9 @@ Protobuf 为了支持跨语言、向下兼容以及应对各种复杂的业务�
 
 ```mermaid
 graph TD
-    Msg[Sproto Message] --> Header["Header: 16-bit 整数 (记录字段数量)"]
-    Msg --> FieldPart["Field Part: 字段区 (16-bit 描述符)"]
-    Msg --> DataPart["Data Part: 数据区 (大块数据)"]
+    Msg[Sproto Message] --> Header["Header: 记录字段数量, 16-bit 整数"]
+    Msg --> FieldPart["Field Part: 字段区, 16-bit 描述符"]
+    Msg --> DataPart["Data Part: 数据区, 大块数据"]
 
     FieldPart -.解析逻辑.-> Logic{读取 16bit 整数 n}
     Logic --> |n == 0| InData[数据块在 Data Part 中<br/>需往后读取长度和内容]
