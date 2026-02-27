@@ -1,0 +1,81 @@
+/* 现代化页码优化 v2.0 (重阴影悬浮风格) */
+.pagination {
+    // 取消原本连在一起的背景和阴影
+    background-color: transparent !important;
+    box-shadow: none !important;
+    
+    // 居中显示并给按钮之间增加间距
+    justify-content: center;
+    gap: 12px; 
+    padding: 30px 0; // 稍微增加上下间距
+
+    .page-link {
+        // 固定每个按钮的宽高，变成圆角正方形
+        flex: 0 0 auto !important;
+        width: 42px;
+        height: 42px;
+        padding: 0 !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        
+        // 独立按钮的基础背景（适配夜间模式）
+        background-color: var(--card-background);
+        border-radius: 12px; // 增加圆角，更柔和
+        
+        // 默认文字颜色
+        color: var(--body-text-color);
+        font-weight: 500;
+
+        // 默认状态下的微弱阴影（增加质感）
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        
+        // 增加过渡动画，让交互更平滑
+        transition: all 0.25s ease;
+
+        // 鼠标悬停时的动效 (微微上浮，阴影加深)
+        &:hover:not(.current):not(.disabled) {
+            background-color: var(--card-background);
+            transform: translateY(-4px); // 上浮多一点
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1); // 加深阴影
+            opacity: 1;
+            color: var(--accent-color); // 文字变成主题色
+        }
+
+        // ==========================================
+        // 核心修改：当前被选中的页面样式 (改为阴影风格)
+        // ==========================================
+        &.current {
+            // 1. 背景不再是刺眼的主题色，保持白色/卡片底色
+            background-color: var(--card-background); 
+            
+            // 2. 文字变成你的主题色
+            color: var(--accent-color) !important; 
+            font-weight: 700; // 字体重一些
+
+            // 3. 使用分层阴影让它“凸起” (Vercel 风格)
+            // 这一步是关键，通过多层阴影营造逼真的悬浮感
+            box-shadow: 
+                0 0 0 1px rgba(0,0,0,0.01), // 极微弱的描边
+                0 4px 6px rgba(0,0,0,0.04), // 基础投影
+                0 16px 30px -4px rgba(0,0,0,0.09) !important; // 核心扩散大阴影
+
+            // 4. 稍微放大一点点
+            transform: scale(1.08) translateY(-2px); 
+        }
+
+        // 禁用状态 (比如在第一页时的"上一页"按钮)
+        &.disabled {
+            opacity: 0.3;
+            background-color: transparent;
+            box-shadow: none;
+            pointer-events: none; // 禁用点击
+        }
+
+        // 调整SVG箭头图标的大小
+        svg {
+            width: 18px;
+            height: 18px;
+        }
+    }
+}
