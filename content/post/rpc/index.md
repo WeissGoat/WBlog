@@ -24,16 +24,16 @@ tags:
 ```mermaid
 graph TD
     subgraph Client ["客户端 (Client)"]
-        A["本地函数调用 User.Get"] --> B("第四层: 调用模型层 Invocation")
-        B --> C("第二层: 序列化层 Serialization")
-        C --> D("第一层: 协议层 Protocol")
-        D --> E("第三层: 网络传输层 Transport")
+        A["本地函数调用 User.Get"] --> B("调用模型层 Invocation")
+        B --> C("序列化层 Serialization")
+        C --> D("协议层 Protocol")
+        D --> E("网络传输层 Transport")
     end
 
     subgraph Server ["服务端 (Server)"]
-        F("第三层: 网络传输层 Transport") --> G("第一层: 协议层 Protocol")
-        G --> H("第二层: 序列化层 Serialization")
-        H --> I("第四层: 调用模型层 Invocation")
+        F("网络传输层 Transport") --> G("协议层 Protocol")
+        G --> H("序列化层 Serialization")
+        H --> I("调用模型层 Invocation")
         I --> J["执行实际的 User.Get 函数"]
     end
     
@@ -41,7 +41,7 @@ graph TD
     E -.->|"网络通信 TCP/UDP"| F
     
     %% 第五层治理贯穿始终
-    K(("第五层: 治理层 Governance<br>服务发现 / 超时 / 心跳")) -.-|"监控与调度"| A
+    K(("治理层 Governance<br>服务发现 / 超时 / 心跳")) -.-|"监控与调度"| A
     K -.-|"监控与调度"| J
 ```
 
