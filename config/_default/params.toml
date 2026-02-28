@@ -3,7 +3,7 @@ rssFullContent = true
 favicon        = "img/avatar.jpg"
 
 [footer]
-    since = 2020
+    since = 2022
 
 [sidebar]
     subtitle = "探索世界ing..."

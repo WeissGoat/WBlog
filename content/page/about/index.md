@@ -28,7 +28,7 @@ menu:
 * **生活：** 视角、观点与日常感悟。
 
 ### ⚙️ 关于本站
-本站基于 Hugo 搭建，采用了质感很好的 hugo-theme-stack 主题，并通过 Cloudflare Pages 自动部署。
+本站基于 Hugo 搭建，采用了简洁的 hugo-theme-stack 主题，并通过 Cloudflare Pages 自动部署。
 
 ### 📬 联系我
 如果你对我的文章感兴趣，或者想一起探讨技术、游戏开发和 AI 创作，非常欢迎找我交流！
