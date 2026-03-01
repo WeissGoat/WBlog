@@ -1,6 +1,6 @@
 ---
 date: '2026-03-01T16:14:32+08:00'
-draft: true
+draft: false
 title: 'AOI'
 image: ""
 math: true
