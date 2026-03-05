@@ -76,11 +76,11 @@ Lua 5.4 的分代模式试图达成以下目标：
     +----(被引用)----< [ G_TOUCHED ] <----(写屏障触发)-------------------------+
 ```
 
-## 关键机制：向前写屏障 (Forward Write Barrier)
+## 关键机制：向后写屏障
 
 分代 GC 的核心难题是：**如何知道哪些老年代对象引用了年轻代对象？** 如果不解决这个问题，回收年轻代时就必须扫描所有老年代对象，这会极其缓慢。
 
-Lua 使用 **向前写屏障（Forward Write Barrier）** 来解决。
+Lua 使用 **向后写屏障** 来解决。
 1. 当执行 t[k] = v 时，如果 t 是老年代（Black），而 v 是新对象（White/Young）。
 2. 触发屏障：luaC_barrier_。
 3. 状态变更： t 被标记为 G_TOUCHED。
@@ -90,29 +90,28 @@ Lua 使用 **向前写屏障（Forward Write Barrier）** 来解决。
 当执行 `lua_settable` 或类似操作（`t[k] = v`）时，虚拟机会调用 `luaC_barrier_`。
 
 ```c
-// 伪代码解析 lgc.c 中的 luaC_barrier_
-void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v) {
-    // o 是父对象 (table), v 是子对象 (value)
+// 伪代码解析 lgc.c 中的 luaC_barrierback_ (向后写屏障)
+void luaC_barrierback_ (lua_State *L, GCObject *o) {
+    // 此时 o 是父对象 (table)
+    // 触发条件通常由宏 luaC_barrierback 包裹：只有当父对象是黑色(或老年代)，且子对象是白色(新生代)时才会进入此函数
     
-    // 只有当父对象是老年代 (isold)，且子对象是新对象 (iswhite) 时才触发
-    if (isold(o) && iswhite(v)) {
+    // 如果已经是 TOUCHED 状态，直接返回，避免重复开销
+    if (getage(o) == G_TOUCHED) 
+        return; 
         
-        // 标记 1: 将父对象标记为 TOUCHED
-        // 这意味着它不再是纯粹的 OLD，它持有对 Young 的引用
-        setage(o, G_TOUCHED);
-        
-        // 标记 2: 将其放入 grayagain 列表
-        // grayagain 本质上就是 "Remembered Set" (记忆集)
-        linkgclist(o, g->grayagain);
-    }
+    black2gray(o); // 将对象从黑色退回灰色 (这就是为什么叫“向后”)
+    
+    // 标记 1: 在分代 GC 模式下，将其标记为 TOUCHED
+    // 这意味着这个老年代对象被“弄脏”了，持有了对新生代 (Young) 的引用
+    setage(o, G_TOUCHED);
+    
+    // 标记 2: 将其放入 grayagain 列表
+    // 在 Minor GC (次级回收) 时，grayagain 就是作为 Remembered Set (记忆集) 扫描的起点
+    linkobjgclist(o, g->grayagain);
 }
 ```
 
-### 为什么叫“向前”？
-Lua 使用 **向前写屏障（Forward Write Barrier）** 来解决。这与增量 GC 中使用的“向后写屏障（Backwards Barrier，将父节点颜色改回灰色）”不同。
 
-在增量 GC 中，如果我们把黑色对象改回灰色（向后），GC 就需要重新扫描它。但在分代 GC 中，我们不希望重新扫描整个对象（如果它很大）。
-Lua 的处理方式其实更接近于“把这个老年代对象暂时看作根节点”。在 Minor GC 开始时，它是扫描的起点之一。
 
 ## 次级回收 (Minor Collection) 的详细流程
 
