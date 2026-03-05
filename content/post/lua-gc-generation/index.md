@@ -85,12 +85,9 @@ Lua 使用 **向后写屏障** 来解决。
 2. 触发屏障：luaC_barrier_。
 3. 状态变更： t 被标记为 G_TOUCHED。
 4. 加入列表： t 被放入 grayagain 列表（在这个上下文中，它被用作待扫描的根集合的一部分）。
-### 屏障触发逻辑
-
-当执行 `lua_settable` 或类似操作（`t[k] = v`）时，虚拟机会调用 `luaC_barrier_`。
 
 ```c
-// 伪代码解析 lgc.c 中的 luaC_barrierback_ (向后写屏障)
+// 核心代码解析 lgc.c 中的 luaC_barrierback_ (向后写屏障)
 void luaC_barrierback_ (lua_State *L, GCObject *o) {
     // 此时 o 是父对象 (table)
     // 触发条件通常由宏 luaC_barrierback 包裹：只有当父对象是黑色(或老年代)，且子对象是白色(新生代)时才会进入此函数
