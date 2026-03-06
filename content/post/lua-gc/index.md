@@ -118,7 +118,7 @@ GC 的起点。
 
 ### 解决方案：写屏障 (Write Barrier)
 
-为了维护**“黑色对象不能指向白色对象”**这一不变量（Invariant），Lua 在每次修改引用（table set/assignment）时，会触发写屏障。
+为了维护**“黑色对象不能指向白色对象”**这一不变量，Lua 在每次修改引用（table set/assignment）时，会触发写屏障。
 
 写屏障有两种主要形式：
 
